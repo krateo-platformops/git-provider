@@ -1,0 +1,31 @@
+# Publishes this repo's Helm charts on a release tag. The workflow itself is the org-wide reusable —
+# this file supplies only the triggers, so "identical across every chart repo" becomes structural
+# instead of a 137-line copy each repo has to keep in step by hand.
+#
+# The shared workflow also gates the publish on every chart-referenced image existing: a chart that
+# names an image which was never published used to publish cleanly and then ImagePullBackOff on every
+# install, with the symptom surfacing several layers from the cause
+# (krateo-platformops/oasgen-provider#62).
+name: release-oci
+
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      chart_version:
+        description: "Chart version (CHART_VERSION). Default: the git tag."
+        required: false
+      app_version:
+        description: "App image version (APP_VERSION). Default: latest tag of the app repo."
+        required: false
+
+jobs:
+  release-oci:
+    uses: krateo-platformops/.github/.github/workflows/release-oci.yaml@main
+    permissions:
+      contents: read
+      packages: write
+    with:
+      chart_version: ${{ github.event.inputs.chart_version || '' }}
+      app_version: ${{ github.event.inputs.app_version || '' }}

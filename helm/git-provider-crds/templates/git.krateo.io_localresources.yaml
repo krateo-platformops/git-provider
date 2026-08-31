@@ -1,0 +1,342 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: localresources.git.krateo.io
+spec:
+  group: git.krateo.io
+  names:
+    categories:
+    - git
+    - krateo
+    kind: LocalResource
+    listKind: LocalResourceList
+    plural: localresources
+    singular: localresource
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.targetCommitId
+      name: TARGET_COMMIT_ID
+      type: string
+    - jsonPath: .status.targetBranch
+      name: TARGET_BRANCH
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: READY
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Synced')].status
+      name: SYNCED
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: AGE
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: A LocalResource is a managed resource that represents a Krateo
+          Git repository
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: A LocalResourceSpec defines the desired state of a LocalResource.
+            properties:
+              createCommitMessage:
+                default: 'chore: add files to remote repository'
+                description: 'CreateCommitMessage: Commit message to use when creating
+                  new files in the destination repository. A description will be appeded
+                  on the commit message indicating some information about the CR that
+                  have triggered the commit.'
+                type: string
+                x-kubernetes-validations:
+                - message: Il campo updateCommitMessage non può contenere la sottostringa
+                    'Managed by git-provider LocalResource:'
+                  rule: '!self.contains(''Managed by git-provider LocalResource:'')'
+              fromResource:
+                description: 'FromResource: Resource to copy from'
+                properties:
+                  fileName:
+                    description: 'FileName: represent the file name to use. If not
+                      set the filename is defined as "gvk"_"metadata.name"_"metadata.namespace".yaml'
+                    pattern: ^[\w\-. {}]+$
+                    type: string
+                  fromRef:
+                    description: 'FromRef: Reference to a resource in the same cluster
+                      to copy from'
+                    properties:
+                      apiVersion:
+                        description: 'ApiVersion: API version of the resource to reference'
+                        type: string
+                      name:
+                        description: 'Name: Name of the resource to reference'
+                        type: string
+                      namespace:
+                        description: 'Namespace: Namespace of the resource to reference.
+                          If not set, the resource is expected to be cluster-scoped.'
+                        type: string
+                      resource:
+                        description: 'Resource: Kind of the resource to reference'
+                        type: string
+                    required:
+                    - apiVersion
+                    - name
+                    - resource
+                    type: object
+                  fromString:
+                    description: 'FromString: This can cointain a string representation
+                      of a K8s manifest to copy from or any other text content. This
+                      is not validated but it preserves the complete ordering of fields
+                      as in the original string.'
+                    type: string
+                  fromYaml:
+                    description: 'FromYaml: Valid K8s Manifest to copy from. It is
+                      considered valid if it contains Kind, APIVersion and (Name or
+                      GenerateName) fields.'
+                    type: object
+                    x-kubernetes-embedded-resource: true
+                    x-kubernetes-preserve-unknown-fields: true
+                type: object
+                x-kubernetes-validations:
+                - message: fileName is required when fromString is set
+                  rule: '!has(self.fromString) || has(self.fileName)'
+                - message: fromRef is immutable once set
+                  rule: '!has(oldSelf.fromRef) || self.fromRef == oldSelf.fromRef'
+                - message: exactly one of the fields in [fromYaml fromRef fromString]
+                    must be set
+                  rule: '[has(self.fromYaml),has(self.fromRef),has(self.fromString)].filter(x,x==true).size()
+                    == 1'
+              insecure:
+                description: 'Insecure: Insecure is useful with hand made SSL certs
+                  (default: false)'
+                type: boolean
+              override:
+                default: false
+                description: |-
+                  Override: If `true`, the provider will override the existing files in the destination repository with the files from the source repository.
+                  If `false`, the provider will only add new files and update existing files in the destination repository.
+                  If not set, the provider will use the default behavior of adding new files.
+                  Avoid using this option with originPath from / to /, as it will override also service folders like .git, .github, .gitignore, etc.
+                type: boolean
+              placeholdersToOverride:
+                description: 'PlaceholdersToOverride: List of placeholders to override
+                  in the format {{ .placeholder }}.'
+                items:
+                  properties:
+                    name:
+                      description: 'Name: Name of the placeholder to replace in the
+                        format {{ .name }}'
+                      type: string
+                    value:
+                      description: 'Value: Value to replace the placeholder with'
+                      type: string
+                  required:
+                  - name
+                  - value
+                  type: object
+                type: array
+              syncEnabled:
+                default: false
+                description: 'SyncEnabled: If `true`, the provider performs updates
+                  on the repository specified in `toLocalResource` when there are
+                  changes in `fromResource` or `fromResourceRef` field.'
+                type: boolean
+              toRepo:
+                description: 'ToRepo: Repository destination to copy to'
+                properties:
+                  branch:
+                    description: 'Branch: if in spec.fromLocalResource, the branch
+                      to copy from. If in spec.toLocalResource, represents the branch
+                      to populate; If the branch does not exist on remote is created
+                      by the provider.'
+                    type: string
+                  cloneFromBranch:
+                    description: |-
+                      CloneFromBranch: used the parent of the new branch.
+                      - If the branch exists, the parameter is ignored.
+                      - If the parameter is not set, the branch is created empty and has no parents (no history) - `git switch --orphan branch-name`
+                    type: string
+                  credentials:
+                    description: 'Credentials: Credentials required for git server
+                      authentication.'
+                    properties:
+                      authMethod:
+                        default: basic
+                        description: |-
+                          AuthMethod: Possible values are: `basic`, `bearer`, `cookiefile`. `basic` requires  `secretRef` and `usernameRef`; `basic` requires only `secretRef`; `cookiefile` requires only `secretRef`
+                          In case of 'cookiefile' the secretRef must contain a file with the cookie.
+                        enum:
+                        - basic
+                        - bearer
+                        - cookiefile
+                        type: string
+                      secretRef:
+                        description: 'SecretRef: reference to a secret that contains
+                          token required to git server authentication or cookie file
+                          in case of ''cookiefile'' authMethod.'
+                        properties:
+                          key:
+                            description: The key to select.
+                            type: string
+                          name:
+                            description: Name of the referenced object.
+                            type: string
+                          namespace:
+                            description: Namespace of the referenced object.
+                            type: string
+                        required:
+                        - key
+                        - name
+                        - namespace
+                        type: object
+                      usernameRef:
+                        description: 'UsernameRef: holds username required to git
+                          server authentication. - If ''authMethod'' is ''bearer''
+                          or ''cookiefile'' the field is ignored.'
+                        properties:
+                          key:
+                            description: The key to select.
+                            type: string
+                          name:
+                            description: Name of the referenced object.
+                            type: string
+                          namespace:
+                            description: Namespace of the referenced object.
+                            type: string
+                        required:
+                        - key
+                        - name
+                        - namespace
+                        type: object
+                    required:
+                    - secretRef
+                    type: object
+                  path:
+                    default: /
+                    description: 'Path: if in spec.fromLocalResource, Represents the
+                      folder to clone from. If not set the entire repository is cloned.
+                      If in spec.toLocalResource, represents the folder to use as
+                      destination.'
+                    type: string
+                  url:
+                    description: 'Url: url of the remote repository'
+                    type: string
+                required:
+                - branch
+                - credentials
+                - url
+                type: object
+              unsupportedCapabilities:
+                default: false
+                description: |-
+                  UnsupportedCapabilities: If `true` [capabilities not supported by any client implementation](https://github.com/go-git/go-git/blob/4fd9979d5c2940e72bdd6946fec21e02d959f0f6/plumbing/transport/common.go#L310) will not be used by the provider
+                  For azuredevops urls for example, the value must be true. Azure DevOps requires multi_ack and multi_ack_detailed capabilities, which go-git doesn't
+                  implement. But: it's possible to do a full clone by saying it's _not_ _un_supported, in which
+                  case the library happily functions so long as it doesn't _actually_ get a multi_ack packet. See
+                  https://github.com/go-git/go-git/blob/v5.5.1/_examples/azure_devops/main.go.
+                type: boolean
+              updateCommitMessage:
+                default: 'chore: update files in remote repository'
+                description: 'UpdateCommitMessage: Commit message to use when updating
+                  existing files in the destination repository. A description will
+                  be appeded on the commit message indicating some information about
+                  the CR that have triggered the commit.'
+                type: string
+                x-kubernetes-validations:
+                - message: Il campo updateCommitMessage non può contenere la sottostringa
+                    'Managed by git-provider LocalResource:'
+                  rule: '!self.contains(''Managed by git-provider LocalResource:'')'
+            required:
+            - fromResource
+            - toRepo
+            type: object
+            x-kubernetes-validations:
+            - message: toRepo is immutable once set
+              rule: '!has(oldSelf.toRepo) || self.toRepo == oldSelf.toRepo'
+            - message: placeholdersToOverride is immutable when syncEnabled is false
+              rule: self.syncEnabled || self.override || !has(oldSelf.placeholdersToOverride)
+                || self.placeholdersToOverride == oldSelf.placeholdersToOverride
+            - message: fromResource.fromYaml is immutable when syncEnabled is false
+              rule: self.syncEnabled || self.override || !has(oldSelf.fromResource.fromYaml)
+                || self.fromResource.fromYaml == oldSelf.fromResource.fromYaml
+            - message: fromResource.fromString is immutable when syncEnabled is false
+              rule: self.syncEnabled || self.override || !has(oldSelf.fromResource.fromString)
+                || self.fromResource.fromString == oldSelf.fromResource.fromString
+            - message: spec.unsupportedCapabilities must be true if toRepo.url contains
+                'dev.azure.com', as the go-git library does not support required capabilities
+                for Azure DevOps. You can read more about that in the description
+                of the 'unsupportedCapabilities' field.
+              rule: '!self.toRepo.url.contains(''dev.azure.com'') || self.unsupportedCapabilities
+                == true'
+          status:
+            description: A LocalResourceStatus represents the observed state of a
+              LocalResource.
+            properties:
+              conditions:
+                description: Conditions of the resource.
+                items:
+                  description: A Condition that may apply to a resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        LastTransitionTime is the last time this condition transitioned from one
+                        status to another.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        A Message containing details about this condition's last transition from
+                        one status to another, if any.
+                      type: string
+                    reason:
+                      description: A Reason for this condition's last transition from
+                        one status to another.
+                      type: string
+                    status:
+                      description: Status of this condition; is it currently True,
+                        False, or Unknown?
+                      type: string
+                    type:
+                      description: |-
+                        Type of this condition. At most one of each condition type may apply to
+                        a resource at any point in time.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              targetBranch:
+                description: 'TargetBranch: branch where commit was done'
+                type: string
+              targetCommitId:
+                description: 'TargetCommitId: last commit identifier of the target
+                  LocalResource'
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

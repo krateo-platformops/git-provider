@@ -1,0 +1,39 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "git-provider.fullname" . }}
+  labels:
+    {{- include "git-provider.labels" . | nindent 4 }}
+rules:
+  # ClusterVisibilty, needed to get resource from references across namespaces
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get"]
+
+  - apiGroups: ["git.krateo.io"]
+    resources: ["localresources"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+
+  - apiGroups: ["git.krateo.io"]
+    resources: ["localresources/status"]
+    verbs: ["get", "patch", "update"]
+
+  - apiGroups: ["git.krateo.io"]
+    resources: ["repoes"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+
+  - apiGroups: ["git.krateo.io"]
+    resources: ["repoes/status"]
+    verbs: ["get", "patch", "update"]
+
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+    
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
