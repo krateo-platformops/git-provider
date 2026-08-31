@@ -1,0 +1,183 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema",
+  "type": "object",
+  "title": "GitProvider",
+  "description": "Full-coverage values schema for the git-provider controller chart. Makes the chart composition-ready: crdgen derives the GitProvider CRD from this schema. The controller reconciles git.krateo.io Repo and LocalResource CRs (shipped by git-provider-crds); this chart tunes only the controller Deployment.",
+  "additionalProperties": false,
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "title": "Replica count"
+    },
+    "image": {
+      "type": "object",
+      "title": "Controller image",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "title": "Image repository"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "title": "Image pull policy",
+          "enum": [
+            "IfNotPresent",
+            "Always",
+            "Never"
+          ]
+        },
+        "tag": {
+          "type": "string",
+          "title": "Image tag",
+          "description": "Overrides the image tag; empty defaults to the chart appVersion."
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "title": "Image pull secrets",
+      "items": {
+        "type": "object"
+      }
+    },
+    "nameOverride": {
+      "type": "string",
+      "title": "Name override"
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "title": "Fullname override"
+    },
+    "serviceAccount": {
+      "type": "object",
+      "title": "Service account",
+      "additionalProperties": false,
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "title": "Create service account"
+        },
+        "automount": {
+          "type": "boolean",
+          "title": "Automount API credentials"
+        },
+        "annotations": {
+          "type": "object",
+          "title": "Service account annotations"
+        },
+        "name": {
+          "type": "string",
+          "title": "Service account name"
+        }
+      }
+    },
+    "podAnnotations": {
+      "type": "object",
+      "title": "Pod annotations"
+    },
+    "podLabels": {
+      "type": "object",
+      "title": "Pod labels"
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "title": "Pod security context"
+    },
+    "securityContext": {
+      "type": "object",
+      "title": "Container security context"
+    },
+    "resources": {
+      "type": "object",
+      "title": "Resources"
+    },
+    "autoscaling": {
+      "type": "object",
+      "title": "Autoscaling",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Autoscaling enabled"
+        },
+        "minReplicas": {
+          "type": "integer",
+          "title": "Minimum replicas"
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "title": "Maximum replicas"
+        },
+        "targetCPUUtilizationPercentage": {
+          "type": "integer",
+          "title": "Target CPU utilization percentage"
+        },
+        "targetMemoryUtilizationPercentage": {
+          "type": "integer",
+          "title": "Target memory utilization percentage"
+        }
+      }
+    },
+    "volumes": {
+      "type": "array",
+      "title": "Additional volumes",
+      "items": {
+        "type": "object"
+      }
+    },
+    "volumeMounts": {
+      "type": "array",
+      "title": "Additional volume mounts",
+      "items": {
+        "type": "object"
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "title": "Node selector"
+    },
+    "tolerations": {
+      "type": "array",
+      "title": "Tolerations",
+      "items": {
+        "type": "object"
+      }
+    },
+    "affinity": {
+      "type": "object",
+      "title": "Affinity"
+    },
+    "env": {
+      "type": "object",
+      "title": "Environment variables",
+      "description": "Controller environment variables (string values).",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "GIT_PROVIDER_DEBUG": {
+          "type": "string",
+          "title": "Debug logging"
+        },
+        "GIT_PROVIDER_POLL_INTERVAL": {
+          "type": "string",
+          "title": "Poll interval (e.g. 3m)"
+        },
+        "GIT_PROVIDER_SERVICE_PORT_HACK": {
+          "type": "string",
+          "title": "Service port hack"
+        },
+        "HOME": {
+          "type": "string",
+          "title": "HOME dir (writable, for git)"
+        }
+      }
+    },
+    "global": {
+      "type": "object",
+      "title": "Global values",
+      "description": "Helm global values (injected when this chart is used as a subchart)."
+    }
+  }
+}
