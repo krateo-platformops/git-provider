@@ -13,7 +13,7 @@ import (
 // path an operator copying a tree cannot tell which file is at fault.
 func TestCopyCollectsEveryRenderFailureWithItsPath(t *testing.T) {
 	src, dst := memfs.New(), memfs.New()
-	writeFile(t, src, "templates/a.yaml", "x: {{ toYaml .foo }}\n")   // Helm builtin
+	writeFile(t, src, "templates/a.yaml", "x: {{ toYaml .foo }}\n")     // Helm builtin
 	writeFile(t, src, "templates/b.yaml", "y: {{ include \"z\" . }}\n") // Helm builtin
 	writeFile(t, src, "values.yaml", "replicas: 1\n")                   // fine
 
@@ -33,8 +33,20 @@ func TestCopyCollectsEveryRenderFailureWithItsPath(t *testing.T) {
 	if !errors.As(err, &failed) {
 		t.Fatalf("expected a *RenderFailed, got %T: %v", err, err)
 	}
-	if len(failed.Errors) != 2 {
-		t.Fatalf("expected 2 failures, got %d: %+v", len(failed.Errors), failed.Errors)
+	// a.yaml has TWO problems (undefined function AND an undeclared value); b.yaml has one.
+	// The scanner reports every problem, not one per file.
+	byPath := map[string]int{}
+	for _, re := range failed.Errors {
+		byPath[re.Path]++
+	}
+	if byPath["/templates/a.yaml"] != 2 {
+		t.Errorf("expected 2 problems in a.yaml, got %d: %+v", byPath["/templates/a.yaml"], failed.Errors)
+	}
+	if byPath["/templates/b.yaml"] != 1 {
+		t.Errorf("expected 1 problem in b.yaml, got %d", byPath["/templates/b.yaml"])
+	}
+	if byPath["/values.yaml"] != 0 {
+		t.Errorf("values.yaml renders cleanly and must not be reported")
 	}
 
 	paths := map[string]bool{}
@@ -52,16 +64,20 @@ func TestCopyCollectsEveryRenderFailureWithItsPath(t *testing.T) {
 
 	// The aggregate message names the count and the paths, so the condition message is useful
 	// even before anyone looks at status.templatingErrors.
+	if got := len(failed.Files()); got != 2 {
+		t.Errorf("Files() = %d, want 2 distinct paths", got)
+	}
+
 	msg := failed.Error()
-	for _, want := range []string{"2 files", "a.yaml", "b.yaml"} {
+	for _, want := range []string{"3 problems", "2 files", "a.yaml", "b.yaml"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("aggregate message missing %q: %s", want, msg)
 		}
 	}
 
 	// RenderErrors() exposes the same list to the controllers.
-	if len(co.RenderErrors()) != 2 {
-		t.Errorf("RenderErrors() = %d, want 2", len(co.RenderErrors()))
+	if len(co.RenderErrors()) != 3 {
+		t.Errorf("RenderErrors() = %d, want 3", len(co.RenderErrors()))
 	}
 }
 
@@ -87,8 +103,8 @@ func TestRenderErrorsResetBetweenCopies(t *testing.T) {
 	if err := co.Copy(true); err == nil {
 		t.Fatal("expected failure")
 	}
-	if len(co.RenderErrors()) != 1 {
-		t.Fatalf("setup: want 1 error, got %d", len(co.RenderErrors()))
+	if len(co.RenderErrors()) == 0 {
+		t.Fatalf("setup: expected at least one error")
 	}
 
 	// Same copier, a source that renders cleanly.

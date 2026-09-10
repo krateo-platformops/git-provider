@@ -140,7 +140,9 @@ With the default (no annotation and no placeholders) a chart is already copied v
 
 ### When templating fails
 
-A render failure names the file. `status.templatingErrors` lists **every** file that failed, not just the first, because Go reports template positions against an anonymous template (`template: template:61: ...`) which is useless when a sync copies more than one file:
+`status.templatingErrors` lists **every** problem found, not one per file and not just the first.
+
+That matters because `text/template` stops at its first error — a file with three undefined functions reports one, and you would fix, re-sync, and meet the next. Worse, a reference to a value that was never declared is **not an error at all**: it renders as the literal `<no value>` and gets committed. Both are reported here:
 
 ```yaml
 status:
@@ -148,15 +150,22 @@ status:
     - type: Synced
       status: "False"
       reason: ReconcileError
-      message: 'unable to copy files: rendering failed for 2 files: templates/a.yaml, templates/b.yaml (first: function "toYaml" not defined)'
+      message: 'unable to copy files: rendering failed: 4 problems in 1 file
+                (templates/deployment.yaml); first: template:2:8: no value declared for ".environment"'
   templatingErrors:
-    - path: templates/a.yaml
-      message: 'template: template:1: function "toYaml" not defined'
-    - path: templates/b.yaml
-      message: 'template: template:1: function "include" not defined'
+    - path: templates/deployment.yaml
+      message: 'template:2:8: no value declared for ".environment"'
+    - path: templates/deployment.yaml
+      message: 'template:3:13: no value declared for ".a"'
+    - path: templates/deployment.yaml
+      message: 'template:3:6: function "toYaml" not defined'
+    - path: templates/deployment.yaml
+      message: 'template:4:6: function "include" not defined'
 ```
 
 A failed sync commits nothing, so this describes what *would* have been published. The list is cleared on the next successful sync.
+
+**One limit, stated honestly.** A syntax error genuinely stops the parser, so for that class there is only ever one report — everything after the broken action is unreachable. You will see a single entry with no `line:column`, which is the parser's own message.
 
 ## Custom Commits
 

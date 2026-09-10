@@ -1,6 +1,8 @@
 package copier
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,7 +20,10 @@ const IgnoreFileName = ".krateoignore"
 
 type Option func(*options)
 type options struct {
-	renderFunc      func(in io.Reader, out io.Writer) error
+	renderFunc func(in io.Reader, out io.Writer) error
+	// validate, when set, reports EVERY problem in a file rather than the one the renderer
+	// stopped at. Used only to enrich a failure; it never decides whether a copy succeeds.
+	validate        func(body string) []template.Problem
 	renderFileNames func(src string) (string, error)
 	ignorePath      string
 	originCopyPath  string
@@ -28,6 +33,7 @@ type options struct {
 func defaultOptions() options {
 	return options{
 		renderFunc:      nil,
+		validate:        nil,
 		renderFileNames: nil,
 		ignorePath:      "/",
 		originCopyPath:  "/",
@@ -64,6 +70,9 @@ func WithGoTemplate(templateValues []template.TemplateValue) Option {
 func WithGoTemplateDelims(templateValues []template.TemplateValue, left, right string) Option {
 	return func(o *options) {
 		values := template.FromTemplateValues(templateValues)
+		o.validate = func(body string) []template.Problem {
+			return template.Validate(body, left, right, values)
+		}
 		o.renderFunc = func(in io.Reader, out io.Writer) error {
 			bin, err := io.ReadAll(in)
 			if err != nil {
@@ -133,16 +142,34 @@ type RenderFailed struct {
 	Errors []RenderError
 }
 
+// Files returns the distinct paths that failed, in encounter order.
+func (e *RenderFailed) Files() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(e.Errors))
+	for _, re := range e.Errors {
+		if !seen[re.Path] {
+			seen[re.Path] = true
+			out = append(out, re.Path)
+		}
+	}
+	return out
+}
+
 func (e *RenderFailed) Error() string {
 	if len(e.Errors) == 1 {
 		return fmt.Sprintf("rendering %s: %v", e.Errors[0].Path, e.Errors[0].Err)
 	}
-	paths := make([]string, 0, len(e.Errors))
-	for _, re := range e.Errors {
-		paths = append(paths, re.Path)
+
+	// One file can carry several problems, so count both — "4 problems in 1 file" is a very
+	// different situation from "4 problems in 4 files", and the condition message is often all
+	// an operator reads.
+	files := e.Files()
+	noun := "files"
+	if len(files) == 1 {
+		noun = "file"
 	}
-	return fmt.Sprintf("rendering failed for %d files: %s (first: %v)",
-		len(e.Errors), strings.Join(paths, ", "), e.Errors[0].Err)
+	return fmt.Sprintf("rendering failed: %d problems in %d %s (%s); first: %v",
+		len(e.Errors), len(files), noun, strings.Join(files, ", "), e.Errors[0].Err)
 }
 
 type Copier struct {
@@ -348,10 +375,32 @@ func (co *Copier) copyFile(src, dst string, doNotRender bool) (err error) {
 		return err
 	}
 
-	if rerr := co.renderFunc(in, out); rerr != nil {
-		// Record and keep going, so one copy reports every offending file instead of only the
-		// first. The destination file is left partially written, which is safe: Copy returns
-		// RenderFailed, and every caller aborts before committing.
+	// Buffer the source so a failure can be re-examined. text/template stops at the first
+	// problem, so the renderer's error alone would send an operator round a fix-and-resync loop
+	// once per problem in the file.
+	body, err := io.ReadAll(in)
+	if err != nil {
+		return fmt.Errorf("failed to read source file: %w", err)
+	}
+
+	if rerr := co.renderFunc(bytes.NewReader(body), out); rerr != nil {
+		// Record and keep going, so one copy reports every offending FILE, not only the first.
+		// The destination file is left partially written, which is safe: Copy returns
+		// RenderFailed and every caller aborts before committing.
+		// Prefer the scanner only when it actually placed the problems. If its own parse could
+		// not continue it returns a single unlocated problem — its parser error, which is not
+		// more useful than the renderer's, and is sometimes less (a `$var` it cannot resolve
+		// masks the undefined function the renderer would have named).
+		if co.validate != nil {
+			problems := co.validate(string(body))
+			if len(problems) > 0 && problems[0].Located() {
+				for _, p := range problems {
+					co.renderErrors = append(co.renderErrors,
+						RenderError{Path: src, Err: errors.New(p.String())})
+				}
+				return nil
+			}
+		}
 		co.renderErrors = append(co.renderErrors, RenderError{Path: src, Err: rerr})
 	}
 	return nil
