@@ -99,10 +99,6 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (reconcile
 		return nil, errors.New(errNotLocalResource)
 	}
 
-	username, err := resource.GetSecret(ctx, c.kube, cr.Spec.ToRepo.Credentials.UsernameRef)
-	if err != nil {
-		return nil, fmt.Errorf("retrieving .toRepo username: %w", err)
-	}
 	token, err := resource.GetSecret(ctx, c.kube, cr.Spec.ToRepo.Credentials.SecretRef)
 	if err != nil {
 		return nil, fmt.Errorf("retrieving .toRepo token: %w", err)
@@ -110,8 +106,23 @@ func (c *connector) Connect(ctx context.Context, mg resource.Managed) (reconcile
 
 	credOpts := credentialhelper.CredentialHelperOpts{
 		AuthMethod: cr.Spec.ToRepo.Credentials.AuthMethod,
-		Username:   username,
 		Token:      token,
+	}
+
+	// Only basic auth consumes a username: GetCredentials drops it for bearer and cookiefile, and
+	// both the CRD field description and docs/local-resource.md document usernameRef as ignored
+	// there. Resolving it unconditionally made a nil ref a hard connect failure ("retrieving
+	// .toRepo username: no credentials secret referenced"), so no bearer LocalResource could ever
+	// reconcile. This mirrors what the repo controller already does in getRepoCredentials.
+	if credentialhelper.UsesUsername(credOpts.AuthMethod) {
+		credOpts.Username = credentialhelper.DefaultUsername
+		if cr.Spec.ToRepo.Credentials.UsernameRef != nil {
+			username, err := resource.GetSecret(ctx, c.kube, cr.Spec.ToRepo.Credentials.UsernameRef)
+			if err != nil {
+				return nil, fmt.Errorf("retrieving .toRepo username: %w", err)
+			}
+			credOpts.Username = username
+		}
 	}
 
 	creds, err := credentialhelper.GetCredentials(credOpts)

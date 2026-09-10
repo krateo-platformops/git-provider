@@ -180,7 +180,7 @@ spec:
                       authMethod:
                         default: basic
                         description: |-
-                          AuthMethod: Possible values are: `basic`, `bearer`, `cookiefile`. `basic` requires  `secretRef` and `usernameRef`; `basic` requires only `secretRef`; `cookiefile` requires only `secretRef`
+                          AuthMethod: Possible values are: `basic`, `bearer`, `cookiefile`. `basic` requires `secretRef` and `usernameRef`; `bearer` requires only `secretRef`; `cookiefile` requires only `secretRef`
                           In case of 'cookiefile' the secretRef must contain a file with the cookie.
                         enum:
                         - basic

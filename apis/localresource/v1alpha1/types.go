@@ -8,7 +8,7 @@ import (
 )
 
 type Credentials struct {
-	// AuthMethod: Possible values are: `basic`, `bearer`, `cookiefile`. `basic` requires  `secretRef` and `usernameRef`; `basic` requires only `secretRef`; `cookiefile` requires only `secretRef`
+	// AuthMethod: Possible values are: `basic`, `bearer`, `cookiefile`. `basic` requires `secretRef` and `usernameRef`; `bearer` requires only `secretRef`; `cookiefile` requires only `secretRef`
 	// In case of 'cookiefile' the secretRef must contain a file with the cookie.
 	// +kubebuilder:validation:Enum=basic;bearer;cookiefile
 	// +kubebuilder:default:=basic
