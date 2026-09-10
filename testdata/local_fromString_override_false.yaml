@@ -24,7 +24,7 @@ spec:
         zipArchive: false
         authMethod: generic
         branch: main
-        placeholderTest: "{{ .example }}"
+        placeholderTest: "{% .example %}"
     
 
   toRepo:

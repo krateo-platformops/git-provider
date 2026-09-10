@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	repov1alpha1 "github.com/krateoplatformops/git-provider/apis/repo/v1alpha1"
 	"github.com/krateoplatformops/git-provider/internal/clients/git"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/option"
+	"github.com/krateoplatformops/git-provider/internal/controllers/common/templating"
 	"github.com/krateoplatformops/git-provider/internal/tools/copier"
 	"github.com/krateoplatformops/git-provider/internal/tools/template"
 	plumbingevent "github.com/krateoplatformops/plumbing/kubeutil/event"
@@ -35,7 +37,10 @@ var (
 	homeDir    string
 )
 
-const AnnotationTemplatingEngine = "krateo.io/templating-engine"
+// Deprecated: prefer templating.Annotation. Kept as an alias so existing references keep
+// compiling; the string itself now has a single definition, shared with the localresource
+// controller so the two cannot drift.
+const AnnotationTemplatingEngine = templating.Annotation
 
 // Setup adds a controller that reconciles Token managed resources.
 func Setup(mgr ctrl.Manager, o option.SetupOptions) error {
@@ -379,21 +384,11 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 		copier.WithIgnorePath(spec.FromRepo.KrateoIgnorePath),
 	}
 
-	if values != nil {
-		engine := cr.GetAnnotations()[AnnotationTemplatingEngine]
-		if engine == "gotemplate" {
-			tplVals := make([]template.TemplateValue, 0, len(values))
-			for k, v := range values {
-				tplVals = append(tplVals, template.TemplateValue{
-					Key:   k,
-					Value: fmt.Sprintf("%v", v),
-				})
-			}
-			opts = append(opts, copier.WithGoTemplate(tplVals))
-		} else {
-			opts = append(opts, copier.WithMustacheTemplate(values))
-		}
+	tplOpts, terr := templatingOptions(cr.GetAnnotations(), values)
+	if terr != nil {
+		return e.failSync(ctx, cr, terr)
 	}
+	opts = append(opts, tplOpts...)
 
 	co, err := copier.NewCopier(fromRepo.FS(), toRepo.FS(), opts...)
 	if err != nil {
@@ -407,8 +402,13 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 		}
 	}
 	if err := co.Copy(override); err != nil {
+		var failed *copier.RenderFailed
+		if errors.As(err, &failed) {
+			cr.Status.TemplatingErrors = templating.StatusErrors(failed.Errors)
+		}
 		return e.failSync(ctx, cr, fmt.Errorf("unable to copy files: %w", err))
 	}
+	cr.Status.TemplatingErrors = nil
 
 	e.log.Info("Origin and target repo synchronized",
 		"fromUrl", spec.FromRepo.Url,
@@ -466,4 +466,59 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 		return e.failSync(ctx, cr, fmt.Errorf("unable to update status: %w", err))
 	}
 	return nil
+}
+
+// templatingOptions decides which templating pass — if any — a Repo gets, in one place and with
+// the same vocabulary the localresource controller uses.
+//
+// The two controllers have produced four defects by disagreeing about shared rules, so the
+// engine names, the delimiter annotation and the accepted values all come from one package.
+// What stays deliberately different is the DEFAULT: a Repo templates only when it was given
+// values (spec.configMapKeyRef), and mustache remains its historical default engine.
+//
+// Two behaviours change, both in the direction of not guessing:
+//
+//   - "none" is now honoured. It previously fell through to the else branch and silently got
+//     MUSTACHE, which is the opposite of what it asks for.
+//   - An unrecognised value is now rejected. It previously also fell through to mustache, so a
+//     typo such as "gotmeplate" silently switched engine — and mustache renders a missing key as
+//     empty (AllowMissingVariables defaults to true), so the result was a quietly gutted file
+//     with a green status.
+func templatingOptions(annotations map[string]string, values map[string]interface{}) ([]copier.Option, error) {
+	if values == nil {
+		return nil, nil
+	}
+
+	engine := annotations[templating.Annotation]
+	if engine == templating.EngineNone {
+		return nil, nil
+	}
+
+	if engine == templating.EngineGoTemplate {
+		left, right, err := templating.Delims(annotations)
+		if err != nil {
+			return nil, err
+		}
+		tplVals := make([]template.TemplateValue, 0, len(values))
+		for k, v := range values {
+			tplVals = append(tplVals, template.TemplateValue{Key: k, Value: fmt.Sprintf("%v", v)})
+		}
+		return []copier.Option{copier.WithGoTemplateDelims(tplVals, left, right)}, nil
+	}
+
+	// Mustache: the historical default, kept for compatibility. It is LEGACY, and the reasons are
+	// worth stating where someone will read them:
+	//   - it also uses `{{ }}`, so it collides with Helm exactly as Go templates did;
+	//   - AllowMissingVariables defaults to true, so an unresolved key renders as EMPTY with no
+	//     error — a silent failure rather than a loud one;
+	//   - it cannot be scanned by tools/template.Validate, so status.templatingErrors carries no
+	//     per-problem detail for it.
+	// Prefer gotemplate with the default delimiters.
+	if engine == "" || engine == templating.EngineMustache {
+		return []copier.Option{copier.WithMustacheTemplate(values)}, nil
+	}
+
+	return nil, fmt.Errorf("unsupported %s %q: expected %q, %q, %q, or the annotation to be absent",
+		templating.Annotation, engine,
+		templating.EngineGoTemplate, templating.EngineMustache, templating.EngineNone)
 }

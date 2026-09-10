@@ -23,7 +23,7 @@ spec:
         zipArchive: false
         authMethod: generic
         branch: main
-        placeholderTest: "{{ .example }}"
+        placeholderTest: "{% .example %}"
 
   createCommitMessage: "chore: test create files in remote repository"
   updateCommitMessage: "chore: test update files in remote repository"

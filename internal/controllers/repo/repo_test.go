@@ -30,6 +30,7 @@ import (
 	repov1alpha1 "github.com/krateoplatformops/git-provider/apis/repo/v1alpha1"
 	gitclient "github.com/krateoplatformops/git-provider/internal/clients/git"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/option"
+	"github.com/krateoplatformops/git-provider/internal/controllers/common/templating"
 	prettylog "github.com/krateoplatformops/plumbing/slogs/pretty"
 	commonv1 "github.com/krateoplatformops/provider-runtime/apis/common/v1"
 	"github.com/krateoplatformops/provider-runtime/pkg/controller"
@@ -772,8 +773,11 @@ func TestController(t *testing.T) {
 			setup: func(ctx context.Context, t *testing.T, r *resources.Resources) {
 				createGiteaRepo(t, "src-tc09", "main")
 				createGiteaRepo(t, "dst-tc09", "main")
+				// The repo's own placeholder uses the default delimiters; the `{{ }}` line is
+				// Helm's and must survive untouched — that coexistence is the point of the
+				// delimiter choice, and it is only observable end to end.
 				commitFilesToRepo(t, "src-tc09", "main", "seed source", map[string]string{
-					"content/template.txt": "Hello {{ .name }}!\n",
+					"content/template.txt": "Hello {% .name %}!\nreplicas: {{ .Values.replicas }}\n",
 				})
 				require.NoError(t, r.Create(ctx, &v1.ConfigMap{
 					ObjectMeta: metav1.ObjectMeta{Name: "tc09-values", Namespace: namespace},
@@ -794,7 +798,8 @@ func TestController(t *testing.T) {
 			verify: func(ctx context.Context, t *testing.T, r *resources.Resources, repoName string) {
 				_, err := waitForRepoCondition(ctx, r, repoName, commonv1.TypeReady, metav1.ConditionTrue, 90*time.Second)
 				require.NoError(t, err)
-				require.Equal(t, "Hello GoTemplate!\n", readRemoteFile(t, "dst-tc09", "main", "content/template.txt"))
+				require.Equal(t, "Hello GoTemplate!\nreplicas: {{ .Values.replicas }}\n",
+					readRemoteFile(t, "dst-tc09", "main", "content/template.txt"))
 			},
 		},
 		{
@@ -841,6 +846,38 @@ func TestController(t *testing.T) {
 				require.Equal(t, "target protected\n", readRemoteFile(t, "dst-tc10", "main", "content/existing.txt"))
 				require.Equal(t, "shared v1\n", readRemoteFile(t, "dst-tc10", "main", "content/shared.txt"))
 				require.Equal(t, "arrived later\n", readRemoteFile(t, "dst-tc10", "main", "content/new-after.txt"))
+			},
+		},
+		{
+			name: "TC11-GoTemplateDelimsAnnotation",
+			setup: func(ctx context.Context, t *testing.T, r *resources.Resources) {
+				createGiteaRepo(t, "src-tc11", "main")
+				createGiteaRepo(t, "dst-tc11", "main")
+				// Opting back in to Go's native delimiters, for content known not to be a chart.
+				commitFilesToRepo(t, "src-tc11", "main", "seed source", map[string]string{
+					"content/template.txt": "Hello {{ .name }}!\n",
+				})
+				require.NoError(t, r.Create(ctx, &v1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{Name: "tc11-values", Namespace: namespace},
+					Data: map[string]string{
+						"values": `{"name":"Delims"}`,
+					},
+				}))
+			},
+			repo: func() *repov1alpha1.Repo {
+				repo := newRepoResource("tc11-delims", "src-tc11", "main", "dst-tc11", "main")
+				repo.ObjectMeta.Annotations = map[string]string{
+					AnnotationTemplatingEngine:  "gotemplate",
+					templating.DelimsAnnotation: "{{,}}",
+				}
+				repo.Spec.Override = true
+				repo.Spec.ConfigMapKeyRef = configMapSelector("tc11-values", "values")
+				return repo
+			}(),
+			verify: func(ctx context.Context, t *testing.T, r *resources.Resources, repoName string) {
+				_, err := waitForRepoCondition(ctx, r, repoName, commonv1.TypeReady, metav1.ConditionTrue, 90*time.Second)
+				require.NoError(t, err)
+				require.Equal(t, "Hello Delims!\n", readRemoteFile(t, "dst-tc11", "main", "content/template.txt"))
 			},
 		},
 		{

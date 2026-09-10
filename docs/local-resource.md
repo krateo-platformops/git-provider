@@ -60,7 +60,7 @@ If `fileName` is not explicitly provided in `spec.fromResource` (and you are not
 
 ## Templating
 
-`LocalResource` supports a simple placeholder replacement mechanism. You can define a list of `placeholdersToOverride` in the spec. The provider will look for occurrences of `{{ .placeholderName }}` in the source content and replace them with the corresponding value.
+`LocalResource` supports a simple placeholder replacement mechanism. You can define a list of `placeholdersToOverride` in the spec. The provider will look for occurrences of `{% .placeholderName %}` in the source content and replace them with the corresponding value.
 
 ```yaml
 spec:
@@ -70,7 +70,102 @@ spec:
     - name: replicaCount
       value: "3"
 ```
-In your source content, you would use `{{ .environment }}` and `{{ .replicaCount }}`.
+In your source content, you would use `{% .environment %}` and `{% .replicaCount %}`.
+
+Rendering is done with Go `text/template` plus the [sprig](https://masterminds.github.io/sprig/) function set.
+
+### When templating is applied
+
+Rendering is **not** a no-op on content that only looks like a template, so it is applied deliberately rather than always:
+
+| `krateo.io/templating-engine` | behaviour |
+|---|---|
+| *(absent — the default)* | Render **only if** `placeholdersToOverride` is set. Otherwise the file is committed byte-for-byte. |
+| `gotemplate` | Always render, including when no placeholders are declared. |
+| `none` | Never render, even when placeholders are declared. |
+
+Any other value is rejected with an error rather than silently treated as one of the above.
+
+The default suits the two common cases at once: a resource that declares placeholders gets them substituted, and a resource that declares none is copied verbatim.
+
+### Delimiters
+
+Placeholders use **`{% %}`**, not Go's usual `{{ }}`.
+
+That is deliberate. The files this provider publishes are overwhelmingly Kubernetes manifests and Helm charts, and **Helm owns `{{ }}`**. Sharing the delimiter makes it impossible to publish a chart with substitution at all — `{{ toYaml x }}` and `{{ include "y" . }}` fail (both are Helm builtins, not sprig ones), `{{ .Values.n }}` renders to the literal `<no value>`, and the `{{/* ... */}}` header `helm create` writes into every `_helpers.tpl` is deleted.
+
+With `{% %}` the two coexist — each system renders its own half, at its own time:
+
+```yaml
+metadata:
+  labels:
+    krateo.io/tenant: {% .tenant %}              # substituted at publish time, by this provider
+spec:
+  replicas: {{ .Values.replicas }}               # left alone; rendered by Helm at install time
+  containers:
+    {{- toYaml .Values.containers | nindent 4 }} # left alone
+```
+
+`{% %}` was chosen by testing the alternatives against real YAML: `<< >>` breaks on the merge key `<<: *defaults`, and `[[ ]]` breaks on flow sequences such as `[[1,2],[3,4]]`.
+
+Override with `krateo.io/templating-delims: "left,right"` — for example `"{{,}}"` to use Go's native syntax where the content is known not to be a chart. A malformed value is rejected rather than silently ignored.
+
+Set `gotemplate` when the content templates **without inputs** — sprig functions that need no values:
+
+```yaml
+metadata:
+  annotations:
+    krateo.io/templating-engine: gotemplate
+spec:
+  fromResource:
+    fileName: README.md
+    fromString: |
+      Generated on {{ now | date "2006-01-02" }} — build {{ uuidv4 }}.
+```
+
+Set `none` for authored content that must survive exactly, most often a **Helm chart**. Chart templates are rendered by Helm at install time, not by this provider at commit time, and pushing them through Go `text/template` first either fails or corrupts them:
+
+* `{{ toYaml ... }}`, `{{ include ... }}`, `{{ required ... }}` and `{{ tpl ... }}` are **Helm** builtins, not sprig ones — the sync fails with `function "toYaml" not defined`.
+* `{{ .Values.replicas }}` is worse, because it *parses*: it renders against an empty value set and is committed as the literal string `<no value>`.
+* `{{/* ... */}}` comment headers — which `helm create` writes at the top of every `_helpers.tpl` — are removed.
+
+```yaml
+metadata:
+  annotations:
+    krateo.io/templating-engine: none
+```
+
+With the default (no annotation and no placeholders) a chart is already copied verbatim; `none` states the intent explicitly and keeps holding if placeholders are added later.
+
+
+### When templating fails
+
+`status.templatingErrors` lists **every** problem found, not one per file and not just the first.
+
+That matters because `text/template` stops at its first error — a file with three undefined functions reports one, and you would fix, re-sync, and meet the next. Worse, a reference to a value that was never declared is **not an error at all**: it renders as the literal `<no value>` and gets committed. Both are reported here:
+
+```yaml
+status:
+  conditions:
+    - type: Synced
+      status: "False"
+      reason: ReconcileError
+      message: 'unable to copy files: rendering failed: 4 problems in 1 file
+                (templates/deployment.yaml); first: template:2:8: no value declared for ".environment"'
+  templatingErrors:
+    - path: templates/deployment.yaml
+      message: 'template:2:8: no value declared for ".environment"'
+    - path: templates/deployment.yaml
+      message: 'template:3:13: no value declared for ".a"'
+    - path: templates/deployment.yaml
+      message: 'template:3:6: function "toYaml" not defined'
+    - path: templates/deployment.yaml
+      message: 'template:4:6: function "include" not defined'
+```
+
+A failed sync commits nothing, so this describes what *would* have been published. The list is cleared on the next successful sync.
+
+**One limit, stated honestly.** A syntax error genuinely stops the parser, so for that class there is only ever one report — everything after the broken action is unreachable. You will see a single entry with no `line:column`, which is the parser's own message.
 
 ## Custom Commits
 

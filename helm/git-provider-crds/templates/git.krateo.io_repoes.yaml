@@ -42,7 +42,9 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: A Repo is a managed resource that represents a Krateo Git Repository
+        description: |-
+          A Repo is a managed resource that represents a Krateo Git Repository
+          // +kubebuilder:deprecatedversion:warning="v1alpha1 will be removed in a future release. Please migrate to Kind RemoteRepo"
         properties:
           apiVersion:
             description: |-
@@ -321,6 +323,32 @@ spec:
                 description: 'TargetCommitId: last commit identifier of the target
                   repo'
                 type: string
+              templatingErrors:
+                description: |-
+                  TemplatingErrors: files whose content could not be rendered, with the renderer's own
+                  message. Populated when a sync fails during templating and cleared on the next
+                  successful one; a failed sync commits nothing, so this describes what would have been
+                  published rather than what was.
+                items:
+                  description: |-
+                    TemplatingError names a file whose content could not be rendered, and why.
+
+                    Templating failures used to surface only as a single wrapped error on the Synced condition,
+                    with no indication of WHICH file was at fault — Go's text/template reports positions against
+                    an anonymous template ("template: template:61: ..."), which is unusable when a sync copies
+                    more than one file.
+                  properties:
+                    message:
+                      description: Message is the renderer's error, verbatim.
+                      type: string
+                    path:
+                      description: Path of the file, relative to the source copy path.
+                      type: string
+                  required:
+                  - message
+                  - path
+                  type: object
+                type: array
             type: object
         required:
         - spec

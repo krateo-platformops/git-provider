@@ -11,6 +11,15 @@ A common use case is **project bootstrapping**. You might have a "golden path" o
 
 ## Templating
 
+> **Engines.** `krateo.io/templating-engine` accepts `gotemplate`, `mustache` and `none`. Absent keeps the historical default, **mustache**. `none` is now honoured — it previously fell through and silently got mustache — and an unrecognised value is now rejected rather than silently switching engine.
+>
+> **`mustache` is legacy.** It also uses `{{ }}`, so it collides with Helm exactly as Go templates did; `AllowMissingVariables` defaults to true, so a key it cannot resolve renders as **empty with no error**; and it cannot be scanned, so `status.templatingErrors` carries no per-problem detail for it. Prefer `gotemplate`.
+>
+> **Delimiters.** Under `gotemplate`, placeholders use `{% %}`, not `{{ }}`, so they do not collide with Helm syntax in the files being copied. Override with `krateo.io/templating-delims: "left,right"`. See [local-resource.md](local-resource.md#delimiters) for the reasoning.
+>
+> **Failures.** `status.templatingErrors` lists every file that could not be rendered, with the renderer's message. A failed sync commits nothing.
+
+
 The `git-provider` supports two templating engines to customize files copied from the source repository: **Mustache** (default) and **Go Templates**.
 
 ### Providing Values
