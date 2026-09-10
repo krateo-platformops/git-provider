@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -381,7 +382,11 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 					Value: fmt.Sprintf("%v", v),
 				})
 			}
-			opts = append(opts, copier.WithGoTemplate(tplVals))
+			left, right, derr := templating.Delims(cr.GetAnnotations())
+			if derr != nil {
+				return e.failSync(ctx, cr, derr)
+			}
+			opts = append(opts, copier.WithGoTemplateDelims(tplVals, left, right))
 		} else {
 			opts = append(opts, copier.WithMustacheTemplate(values))
 		}
@@ -399,8 +404,13 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 		}
 	}
 	if err := co.Copy(override); err != nil {
+		var failed *copier.RenderFailed
+		if errors.As(err, &failed) {
+			cr.Status.TemplatingErrors = templating.StatusErrors(failed.Errors)
+		}
 		return e.failSync(ctx, cr, fmt.Errorf("unable to copy files: %w", err))
 	}
+	cr.Status.TemplatingErrors = nil
 
 	e.log.Info("Origin and target repo synchronized",
 		"fromUrl", spec.FromRepo.Url,

@@ -36,15 +36,17 @@ func TestCopyLeavesHelmTemplateVerbatimWhenNotTemplating(t *testing.T) {
 	}
 }
 
-// The regression itself: with a Go-template pass installed, the same file fails with the
-// exact error seen on krateo-057 for LocalResource/publish-sock-shop-003.
+// The regression itself, now reachable only by opting in to Go's `{{ }}` delimiters: the same
+// file fails with the exact error seen on krateo-057 for LocalResource/publish-sock-shop-003.
+// With the DEFAULT delimiters this no longer happens at all — see
+// TestGoTemplateLeavesHelmSyntaxAloneByDefault in the localresource package.
 func TestGoTemplatePassRejectsHelmBuiltins(t *testing.T) {
 	src, dst := memfs.New(), memfs.New()
 	writeFile(t, src, "templates/microservices.yaml", helmChart)
 
 	co, err := NewCopier(src, dst,
 		WithOriginCopyPath("/"), WithTargetCopyPath("/"),
-		WithGoTemplate(nil), // no values — exactly what an absent placeholders list produced
+		WithGoTemplateDelims(nil, "{{", "}}"), // opted in to Go's delimiters, no values
 	)
 	if err != nil {
 		t.Fatalf("NewCopier: %v", err)
@@ -66,7 +68,7 @@ func TestGoTemplatePassSilentlyEmptiesUnknownValues(t *testing.T) {
 	writeFile(t, src, "values.yaml", parseable)
 
 	co, err := NewCopier(src, dst,
-		WithOriginCopyPath("/"), WithTargetCopyPath("/"), WithGoTemplate(nil))
+		WithOriginCopyPath("/"), WithTargetCopyPath("/"), WithGoTemplateDelims(nil, "{{", "}}"))
 	if err != nil {
 		t.Fatalf("NewCopier: %v", err)
 	}
@@ -90,7 +92,7 @@ func TestPlaceholdersStillSubstituteWhenPresent(t *testing.T) {
 
 	co, err := NewCopier(src, dst,
 		WithOriginCopyPath("/"), WithTargetCopyPath("/"),
-		WithGoTemplate([]template.TemplateValue{{Key: "name", Value: "sock-shop"}}))
+		WithGoTemplateDelims([]template.TemplateValue{{Key: "name", Value: "sock-shop"}}, "{{", "}}"))
 	if err != nil {
 		t.Fatalf("NewCopier: %v", err)
 	}

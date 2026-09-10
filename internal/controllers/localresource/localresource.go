@@ -405,8 +405,16 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 		return fmt.Errorf("unable to create copier: %w", err)
 	}
 	if err := co.Copy(override); err != nil {
+		// Name the offending files on the status. The renderer's own message positions itself
+		// against an anonymous template, so without this the operator sees a line number with
+		// no file attached.
+		var failed *copier.RenderFailed
+		if errors.As(err, &failed) {
+			cr.Status.TemplatingErrors = templating.StatusErrors(failed.Errors)
+		}
 		return fmt.Errorf("unable to copy files: %w", err)
 	}
+	cr.Status.TemplatingErrors = nil
 
 	log.Debug("Origin and target LocalResource synchronized",
 		"toUrl", spec.ToRepo.Url,
@@ -481,14 +489,19 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 // (`{{ now | date "2006-01-02" }}`, `{{ uuidv4 }}`, `{{ env "USER" }}`), and a file that does
 // declare values can still contain regions that must survive verbatim.
 func templatingOptions(annotations map[string]string, values []template.TemplateValue) ([]copier.Option, error) {
+	left, right, err := templating.Delims(annotations)
+	if err != nil {
+		return nil, err
+	}
+
 	switch engine := annotations[templating.Annotation]; engine {
 	case "":
 		if len(values) > 0 {
-			return []copier.Option{copier.WithGoTemplate(values)}, nil
+			return []copier.Option{copier.WithGoTemplateDelims(values, left, right)}, nil
 		}
 		return nil, nil
 	case templating.EngineGoTemplate:
-		return []copier.Option{copier.WithGoTemplate(values)}, nil
+		return []copier.Option{copier.WithGoTemplateDelims(values, left, right)}, nil
 	case templating.EngineNone:
 		return nil, nil
 	default:

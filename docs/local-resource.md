@@ -60,7 +60,7 @@ If `fileName` is not explicitly provided in `spec.fromResource` (and you are not
 
 ## Templating
 
-`LocalResource` supports a simple placeholder replacement mechanism. You can define a list of `placeholdersToOverride` in the spec. The provider will look for occurrences of `{{ .placeholderName }}` in the source content and replace them with the corresponding value.
+`LocalResource` supports a simple placeholder replacement mechanism. You can define a list of `placeholdersToOverride` in the spec. The provider will look for occurrences of `{% .placeholderName %}` in the source content and replace them with the corresponding value.
 
 ```yaml
 spec:
@@ -70,7 +70,7 @@ spec:
     - name: replicaCount
       value: "3"
 ```
-In your source content, you would use `{{ .environment }}` and `{{ .replicaCount }}`.
+In your source content, you would use `{% .environment %}` and `{% .replicaCount %}`.
 
 Rendering is done with Go `text/template` plus the [sprig](https://masterminds.github.io/sprig/) function set.
 
@@ -87,6 +87,28 @@ Rendering is **not** a no-op on content that only looks like a template, so it i
 Any other value is rejected with an error rather than silently treated as one of the above.
 
 The default suits the two common cases at once: a resource that declares placeholders gets them substituted, and a resource that declares none is copied verbatim.
+
+### Delimiters
+
+Placeholders use **`{% %}`**, not Go's usual `{{ }}`.
+
+That is deliberate. The files this provider publishes are overwhelmingly Kubernetes manifests and Helm charts, and **Helm owns `{{ }}`**. Sharing the delimiter makes it impossible to publish a chart with substitution at all — `{{ toYaml x }}` and `{{ include "y" . }}` fail (both are Helm builtins, not sprig ones), `{{ .Values.n }}` renders to the literal `<no value>`, and the `{{/* ... */}}` header `helm create` writes into every `_helpers.tpl` is deleted.
+
+With `{% %}` the two coexist — each system renders its own half, at its own time:
+
+```yaml
+metadata:
+  labels:
+    krateo.io/tenant: {% .tenant %}              # substituted at publish time, by this provider
+spec:
+  replicas: {{ .Values.replicas }}               # left alone; rendered by Helm at install time
+  containers:
+    {{- toYaml .Values.containers | nindent 4 }} # left alone
+```
+
+`{% %}` was chosen by testing the alternatives against real YAML: `<< >>` breaks on the merge key `<<: *defaults`, and `[[ ]]` breaks on flow sequences such as `[[1,2],[3,4]]`.
+
+Override with `krateo.io/templating-delims: "left,right"` — for example `"{{,}}"` to use Go's native syntax where the content is known not to be a chart. A malformed value is rejected rather than silently ignored.
 
 Set `gotemplate` when the content templates **without inputs** — sprig functions that need no values:
 
@@ -115,6 +137,26 @@ metadata:
 
 With the default (no annotation and no placeholders) a chart is already copied verbatim; `none` states the intent explicitly and keeps holding if placeholders are added later.
 
+
+### When templating fails
+
+A render failure names the file. `status.templatingErrors` lists **every** file that failed, not just the first, because Go reports template positions against an anonymous template (`template: template:61: ...`) which is useless when a sync copies more than one file:
+
+```yaml
+status:
+  conditions:
+    - type: Synced
+      status: "False"
+      reason: ReconcileError
+      message: 'unable to copy files: rendering failed for 2 files: templates/a.yaml, templates/b.yaml (first: function "toYaml" not defined)'
+  templatingErrors:
+    - path: templates/a.yaml
+      message: 'template: template:1: function "toYaml" not defined'
+    - path: templates/b.yaml
+      message: 'template: template:1: function "include" not defined'
+```
+
+A failed sync commits nothing, so this describes what *would* have been published. The list is cleared on the next successful sync.
 
 ## Custom Commits
 

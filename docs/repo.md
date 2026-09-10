@@ -11,6 +11,11 @@ A common use case is **project bootstrapping**. You might have a "golden path" o
 
 ## Templating
 
+> **Delimiters.** Placeholders use `{% %}`, not `{{ }}`, so they do not collide with Helm syntax in the files being copied. Override with `krateo.io/templating-delims: "left,right"`. See [local-resource.md](local-resource.md#delimiters) for the reasoning.
+>
+> **Failures.** `status.templatingErrors` lists every file that could not be rendered, with the renderer's message. A failed sync commits nothing.
+
+
 The `git-provider` supports two templating engines to customize files copied from the source repository: **Mustache** (default) and **Go Templates**.
 
 ### Providing Values

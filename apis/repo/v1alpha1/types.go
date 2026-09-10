@@ -1,6 +1,7 @@
 package v1alpha1
 
 import (
+	commonapis "github.com/krateoplatformops/git-provider/apis/common/v1alpha1"
 	commonv1 "github.com/krateoplatformops/provider-runtime/apis/common/v1"
 	prv1 "github.com/krateoplatformops/provider-runtime/apis/common/v1"
 	"github.com/krateoplatformops/provider-runtime/pkg/resource"
@@ -105,6 +106,12 @@ type RepoStatus struct {
 
 	// OriginBranch: branch where commit was done
 	OriginBranch string `json:"originBranch,omitempty"`
+	// TemplatingErrors: files whose content could not be rendered, with the renderer's own
+	// message. Populated when a sync fails during templating and cleared on the next
+	// successful one; a failed sync commits nothing, so this describes what would have been
+	// published rather than what was.
+	// +optional
+	TemplatingErrors []commonapis.TemplatingError `json:"templatingErrors,omitempty"`
 }
 
 // +kubebuilder:object:root=true

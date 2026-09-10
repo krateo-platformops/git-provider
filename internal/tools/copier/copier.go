@@ -53,7 +53,15 @@ func WithTargetCopyPath(tcp string) Option {
 	}
 }
 
+// WithGoTemplate renders with git-provider's default delimiters.
 func WithGoTemplate(templateValues []template.TemplateValue) Option {
+	return WithGoTemplateDelims(templateValues, template.DefaultLeftDelim, template.DefaultRightDelim)
+}
+
+// WithGoTemplateDelims renders with the given delimiters, so a resource can move its own
+// placeholders out of the way of a delimiter the CONTENT already owns — Helm's `{{ }}` being the
+// case that matters.
+func WithGoTemplateDelims(templateValues []template.TemplateValue, left, right string) Option {
 	return func(o *options) {
 		values := template.FromTemplateValues(templateValues)
 		o.renderFunc = func(in io.Reader, out io.Writer) error {
@@ -62,7 +70,7 @@ func WithGoTemplate(templateValues []template.TemplateValue) Option {
 				return err
 			}
 			tmpl := template.Template(bin)
-			renderedBin, err := tmpl.Render(values)
+			renderedBin, err := tmpl.RenderDelims(values, left, right)
 			if err != nil {
 				return err
 			}
@@ -72,7 +80,7 @@ func WithGoTemplate(templateValues []template.TemplateValue) Option {
 		}
 		o.renderFileNames = func(src string) (string, error) {
 			tmpl := template.Template(src)
-			renderedBin, err := tmpl.Render(values)
+			renderedBin, err := tmpl.RenderDelims(values, left, right)
 			if err != nil {
 				return "", err
 			}
@@ -107,14 +115,49 @@ func WithMustacheTemplate(templateValues interface{}) Option {
 	}
 }
 
+// RenderError is a single file the templating pass could not render.
+type RenderError struct {
+	// Path of the offending file, as seen in the SOURCE tree.
+	Path string
+	// Err is the renderer's error, unwrapped.
+	Err error
+}
+
+// RenderFailed aggregates every file that failed to render in one copy.
+//
+// A copy collects these rather than stopping at the first, because Go's text/template reports
+// positions against an anonymous template ("template: template:61: ...") — with one error and no
+// path, an operator copying a tree cannot tell which file is at fault. Copy still returns this as
+// an error, so callers abort before committing anything.
+type RenderFailed struct {
+	Errors []RenderError
+}
+
+func (e *RenderFailed) Error() string {
+	if len(e.Errors) == 1 {
+		return fmt.Sprintf("rendering %s: %v", e.Errors[0].Path, e.Errors[0].Err)
+	}
+	paths := make([]string, 0, len(e.Errors))
+	for _, re := range e.Errors {
+		paths = append(paths, re.Path)
+	}
+	return fmt.Sprintf("rendering failed for %d files: %s (first: %v)",
+		len(e.Errors), strings.Join(paths, ", "), e.Errors[0].Err)
+}
+
 type Copier struct {
 	fromFS       billy.Filesystem
 	toFS         billy.Filesystem
 	krateoIgnore *gi.GitIgnore
 	targetIgnore *gi.GitIgnore
+	renderErrors []RenderError
 
 	options
 }
+
+// RenderErrors returns every file that failed to render during the last Copy, in the order they
+// were encountered. Empty when the copy succeeded.
+func (co *Copier) RenderErrors() []RenderError { return co.renderErrors }
 
 func NewCopier(fromFS, toFS billy.Filesystem, opts ...Option) (*Copier, error) {
 	if fromFS == nil {
@@ -163,7 +206,14 @@ func (co *Copier) Copy(override bool) (err error) {
 		return fmt.Errorf("failed to set krateo ignore: %w", err)
 	}
 
-	return co.copyDir(src, dst)
+	co.renderErrors = nil
+	if err := co.copyDir(src, dst); err != nil {
+		return err
+	}
+	if len(co.renderErrors) > 0 {
+		return &RenderFailed{Errors: co.renderErrors}
+	}
+	return nil
 }
 
 func (co *Copier) copyDir(src, dst string) (err error) {
@@ -266,7 +316,9 @@ func (co *Copier) copyFile(src, dst string, doNotRender bool) (err error) {
 		var err error
 		dst, err = co.renderFileNames(dst)
 		if err != nil {
-			return fmt.Errorf("failed to render file names: %w", err)
+			co.renderErrors = append(co.renderErrors,
+				RenderError{Path: src, Err: fmt.Errorf("rendering the file name: %w", err)})
+			return nil
 		}
 	}
 
@@ -296,7 +348,13 @@ func (co *Copier) copyFile(src, dst string, doNotRender bool) (err error) {
 		return err
 	}
 
-	return co.renderFunc(in, out)
+	if rerr := co.renderFunc(in, out); rerr != nil {
+		// Record and keep going, so one copy reports every offending file instead of only the
+		// first. The destination file is left partially written, which is safe: Copy returns
+		// RenderFailed, and every caller aborts before committing.
+		co.renderErrors = append(co.renderErrors, RenderError{Path: src, Err: rerr})
+	}
+	return nil
 }
 
 func (co *Copier) setKrateoIgnore() error {

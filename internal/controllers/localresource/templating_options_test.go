@@ -50,7 +50,7 @@ func render(t *testing.T, annotations map[string]string, values []template.Templ
 }
 
 const chart = "replicas: {{ .Values.replicas }}\n"
-const valueFree = `stamp: {{ "x" | upper }}` + "\n"
+const valueFree = `stamp: {% "x" | upper %}` + "\n"
 
 // Default, no values: authored content survives. This is the sock-shop case.
 func TestDefaultWithoutValuesCopiesVerbatim(t *testing.T) {
@@ -66,7 +66,7 @@ func TestDefaultWithoutValuesCopiesVerbatim(t *testing.T) {
 // Default, values declared: substitution still happens. Unchanged behaviour.
 func TestDefaultWithValuesSubstitutes(t *testing.T) {
 	got, err := render(t, nil,
-		[]template.TemplateValue{{Key: "name", Value: "sock-shop"}}, "project: {{ .name }}\n")
+		[]template.TemplateValue{{Key: "name", Value: "sock-shop"}}, "project: {% .name %}\n")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestGoTemplateRendersWithoutValues(t *testing.T) {
 
 // none: never render, even when values ARE declared.
 func TestNoneNeverRendersEvenWithValues(t *testing.T) {
-	body := "project: {{ .name }}\n"
+	body := "project: {% .name %}\n"
 	got, err := render(t, map[string]string{templating.Annotation: templating.EngineNone},
 		[]template.TemplateValue{{Key: "name", Value: "sock-shop"}}, body)
 	if err != nil {
@@ -110,15 +110,51 @@ func TestUnknownEngineIsRejected(t *testing.T) {
 	}
 }
 
-// The regression that started this: gotemplate on a Helm chart still fails, and it should —
-// the annotation is a choice, not a promise that Helm syntax will survive a Go render.
-func TestGoTemplateStillFailsOnHelmBuiltins(t *testing.T) {
-	_, err := render(t, map[string]string{templating.Annotation: templating.EngineGoTemplate}, nil,
-		"command:\n  {{- toYaml $x | nindent 4 }}\n")
+// The point of the default delimiters: gotemplate no longer touches Helm syntax, so a chart can
+// be published WITH substitution — the case that was impossible before.
+func TestGoTemplateLeavesHelmSyntaxAloneByDefault(t *testing.T) {
+	body := "name: {{ include \"x\" . }}\nreplicas: {{ .Values.replicas }}\ntenant: {% .tenant %}\n"
+	got, err := render(t, map[string]string{templating.Annotation: templating.EngineGoTemplate},
+		[]template.TemplateValue{{Key: "tenant", Value: "kiratech"}}, body)
+	if err != nil {
+		t.Fatalf("Helm syntax should no longer break the render: %v", err)
+	}
+	want := "name: {{ include \"x\" . }}\nreplicas: {{ .Values.replicas }}\ntenant: kiratech\n"
+	if got != want {
+		t.Errorf("expected Helm syntax preserved and {%% %%} substituted.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// Opting back in to Go's native delimiters still works — and on a Helm chart it still fails,
+// which is the honest outcome of asking for it.
+func TestGoDelimsOptInStillCollidesWithHelm(t *testing.T) {
+	_, err := render(t, map[string]string{
+		templating.Annotation:       templating.EngineGoTemplate,
+		templating.DelimsAnnotation: "{{,}}",
+	}, nil, "command:\n  {{- toYaml $x | nindent 4 }}\n")
 	if err == nil {
-		t.Fatal("expected the Helm builtin to fail under an explicit gotemplate request")
+		t.Fatal("expected the Helm builtin to fail once {{ }} is opted into")
 	}
 	if !strings.Contains(err.Error(), `function "toYaml" not defined`) {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestGoDelimsOptInSubstitutes(t *testing.T) {
+	got, err := render(t, map[string]string{templating.DelimsAnnotation: "{{,}}"},
+		[]template.TemplateValue{{Key: "name", Value: "sock-shop"}}, "project: {{ .name }}\n")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "project: sock-shop\n" {
+		t.Errorf("expected substitution under opted-in {{ }}, got %q", got)
+	}
+}
+
+func TestMalformedDelimsRejected(t *testing.T) {
+	for _, bad := range []string{"{{", "a,b,c", ",}}", "{{,"} {
+		if _, err := templatingOptions(map[string]string{templating.DelimsAnnotation: bad}, nil); err == nil {
+			t.Errorf("expected %q to be rejected", bad)
+		}
 	}
 }

@@ -47,7 +47,7 @@ func TestRenderFileNamesAndContent(t *testing.T) {
 	to := memfs.New()
 
 	// source file with templated name and content
-	writeFile(t, from, "/src/file_{{.name}}.txt", "hello {{.name}}")
+	writeFile(t, from, "/src/file_{%.name%}.txt", "hello {%.name%}")
 
 	co, err := NewCopier(from, to, WithOriginCopyPath("/src"), WithTargetCopyPath("/dst"), WithIgnorePath("/"), WithGoTemplate([]template.TemplateValue{{Key: "name", Value: "world"}}))
 	if err != nil {
