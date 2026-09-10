@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/go-git/go-billy/v5/memfs"
-	"github.com/krateoplatformops/git-provider/internal/tools/template"
+	tpl "github.com/krateoplatformops/git-provider/internal/tools/template"
 )
 
 // A Helm chart template, as the Blueprint Builder publishes it. `toYaml` is a Helm
@@ -60,29 +60,36 @@ func TestGoTemplatePassRejectsHelmBuiltins(t *testing.T) {
 	}
 }
 
-// The quieter half, and the reason this matters beyond one blocked publish: a template
-// that merely PARSES is executed, and a missing value is committed as an empty string.
-func TestGoTemplatePassSilentlyEmptiesUnknownValues(t *testing.T) {
+// The quieter half, and the reason this matters beyond one blocked publish: a template that
+// merely PARSES used to be executed with a missing value committed as `<no value>` — no error,
+// nothing in the logs, a corrupted file in the repo. It is now caught and the copy fails.
+func TestUndeclaredValueIsCaughtRatherThanCommitted(t *testing.T) {
 	src, dst := memfs.New(), memfs.New()
-	const parseable = "replicas: {{ .Values.replicas }}\n"
+	const parseable = "replicas: {% .replicas %}\n"
 	writeFile(t, src, "values.yaml", parseable)
 
 	co, err := NewCopier(src, dst,
-		WithOriginCopyPath("/"), WithTargetCopyPath("/"), WithGoTemplateDelims(nil, "{{", "}}"))
+		WithOriginCopyPath("/"), WithTargetCopyPath("/"), WithGoTemplate(nil))
 	if err != nil {
 		t.Fatalf("NewCopier: %v", err)
 	}
-	if err := co.Copy(true); err != nil {
-		t.Fatalf("Copy: %v", err)
+
+	err = co.Copy(true)
+	if err == nil {
+		t.Fatal("expected the undeclared value to fail the copy, not render to <no value>")
 	}
-	got := readFile(t, dst, "values.yaml")
-	if got == parseable {
-		t.Fatal("expected the value to be substituted away; the premise of this test is wrong")
+	if !strings.Contains(err.Error(), `no value declared for ".replicas"`) {
+		t.Errorf("expected the undeclared value to be named, got: %v", err)
 	}
-	if got != "replicas: \n" && got != "replicas: <no value>\n" {
-		t.Logf("rendered to %q", got)
+
+	// The renderer alone would NOT have caught this — that is the whole point.
+	out, rerr := tpl.Template(parseable).Render(map[string]any{})
+	if rerr != nil {
+		t.Fatalf("premise check: Render should succeed silently, got %v", rerr)
 	}
-	t.Logf("silent corruption confirmed: %q -> %q", parseable, got)
+	if !strings.Contains(string(out), "<no value>") {
+		t.Fatalf("premise check: expected <no value>, got %q", string(out))
+	}
 }
 
 // Substitution must still work when the CR does ask for it.
@@ -92,7 +99,7 @@ func TestPlaceholdersStillSubstituteWhenPresent(t *testing.T) {
 
 	co, err := NewCopier(src, dst,
 		WithOriginCopyPath("/"), WithTargetCopyPath("/"),
-		WithGoTemplateDelims([]template.TemplateValue{{Key: "name", Value: "sock-shop"}}, "{{", "}}"))
+		WithGoTemplateDelims([]tpl.TemplateValue{{Key: "name", Value: "sock-shop"}}, "{{", "}}"))
 	if err != nil {
 		t.Fatalf("NewCopier: %v", err)
 	}

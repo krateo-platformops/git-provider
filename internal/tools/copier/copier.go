@@ -383,24 +383,31 @@ func (co *Copier) copyFile(src, dst string, doNotRender bool) (err error) {
 		return fmt.Errorf("failed to read source file: %w", err)
 	}
 
-	if rerr := co.renderFunc(bytes.NewReader(body), out); rerr != nil {
-		// Record and keep going, so one copy reports every offending FILE, not only the first.
-		// The destination file is left partially written, which is safe: Copy returns
-		// RenderFailed and every caller aborts before committing.
-		// Prefer the scanner only when it actually placed the problems. If its own parse could
-		// not continue it returns a single unlocated problem — its parser error, which is not
-		// more useful than the renderer's, and is sometimes less (a `$var` it cannot resolve
-		// masks the undefined function the renderer would have named).
-		if co.validate != nil {
-			problems := co.validate(string(body))
-			if len(problems) > 0 && problems[0].Located() {
-				for _, p := range problems {
-					co.renderErrors = append(co.renderErrors,
-						RenderError{Path: src, Err: errors.New(p.String())})
-				}
-				return nil
+	rerr := co.renderFunc(bytes.NewReader(body), out)
+
+	// Validate EVERY rendered file, not only the ones that failed.
+	//
+	// The renderer is not a sufficient gate: a reference to a value that was never declared is
+	// not an error to text/template — it emits the literal "<no value>" and returns nil. A file
+	// whose only fault is an undeclared value would otherwise be committed silently, which is
+	// precisely the corruption this reporting exists to surface.
+	if co.validate != nil {
+		problems := co.validate(string(body))
+		// An UNLOCATED problem means the scanner's own parse could not continue. Its message is
+		// no better than the renderer's and is sometimes worse (a `$var` it cannot resolve masks
+		// the undefined function the renderer would have named), so defer to rerr in that case.
+		if len(problems) > 0 && problems[0].Located() {
+			for _, p := range problems {
+				co.renderErrors = append(co.renderErrors, RenderError{Path: src, Err: errors.New(p.String())})
 			}
+			return nil
 		}
+	}
+
+	if rerr != nil {
+		// Record and keep going, so one copy reports every offending FILE, not only the first.
+		// The destination file may be left partially written, which is safe: Copy returns
+		// RenderFailed and every caller aborts before committing.
 		co.renderErrors = append(co.renderErrors, RenderError{Path: src, Err: rerr})
 	}
 	return nil
