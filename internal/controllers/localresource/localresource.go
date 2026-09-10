@@ -388,11 +388,27 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 			})
 		}
 	}
-	co, err := copier.NewCopier(fromLocal, toRepo.FS(),
+	opts := []copier.Option{
 		copier.WithOriginCopyPath(fromPath),
 		copier.WithTargetCopyPath(toPath),
-		copier.WithGoTemplate(values),
-	)
+	}
+
+	// Render ONLY when the CR actually asked for substitution. This mirrors the repo
+	// controller, which likewise installs a templating pass only when it has values.
+	//
+	// It is load-bearing, not a tidy-up. WithGoTemplate runs every file through
+	// text/template + sprig, so a file is rendered whether or not there is anything to
+	// substitute — and rendering is not a no-op on content that merely LOOKS like a
+	// template. A Helm chart is the common case: `{{- toYaml $svc.command | nindent 12 }}`
+	// fails outright, because toYaml is a Helm builtin and not a sprig one, and
+	// `{{ .Values.replicas }}` is worse — it parses, executes against an empty value set,
+	// and commits an empty string. That is a corrupted chart with no error anywhere.
+	// A LocalResource with no placeholders is asking to copy bytes, so copy bytes.
+	if len(values) > 0 {
+		opts = append(opts, copier.WithGoTemplate(values))
+	}
+
+	co, err := copier.NewCopier(fromLocal, toRepo.FS(), opts...)
 	if err != nil {
 		return fmt.Errorf("unable to create copier: %w", err)
 	}
