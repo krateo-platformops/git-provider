@@ -352,6 +352,18 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 		if err != nil {
 			e.log.Warn("Unable to load configmap with template data", "msg", err.Error())
 			e.rec.Event(cr, plumbingevent.Warning("CannotLoadConfigMap", "Reconciling", fmt.Errorf("Unable to load configmap with template data: %s", err.Error())))
+
+			// Stop. Continuing here is worse than failing: loadValuesFromConfigMap returns
+			// (nil, err) on every error path, so `values` is nil, the `if values != nil`
+			// guard below installs no templating engine, and the copy/commit/push still
+			// runs — publishing files with their `{{ }}` placeholders intact and then
+			// reporting Available/Synced. Because TargetCommitId then matches what was
+			// pushed, the resource is terminal: it never retries and never corrects itself.
+			//
+			// A CR that sets configMapKeyRef has asked for substitution. If the values
+			// cannot be read, the honest outcome is a failed sync, not a green one over
+			// unrendered output.
+			return e.failSync(ctx, cr, fmt.Errorf("unable to load configmap with template data: %w", err))
 		}
 
 		e.log.Debug("Loaded values from config map",
