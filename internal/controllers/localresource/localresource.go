@@ -29,6 +29,7 @@ import (
 	credentialhelper "github.com/krateoplatformops/git-provider/internal/controllers/common/credentialHelper"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/footer"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/option"
+	"github.com/krateoplatformops/git-provider/internal/controllers/common/templating"
 	"github.com/krateoplatformops/git-provider/internal/tools/copier"
 	"github.com/krateoplatformops/git-provider/internal/tools/localfs"
 	"github.com/krateoplatformops/git-provider/internal/tools/template"
@@ -393,20 +394,11 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 		copier.WithTargetCopyPath(toPath),
 	}
 
-	// Render ONLY when the CR actually asked for substitution. This mirrors the repo
-	// controller, which likewise installs a templating pass only when it has values.
-	//
-	// It is load-bearing, not a tidy-up. WithGoTemplate runs every file through
-	// text/template + sprig, so a file is rendered whether or not there is anything to
-	// substitute — and rendering is not a no-op on content that merely LOOKS like a
-	// template. A Helm chart is the common case: `{{- toYaml $svc.command | nindent 12 }}`
-	// fails outright, because toYaml is a Helm builtin and not a sprig one, and
-	// `{{ .Values.replicas }}` is worse — it parses, executes against an empty value set,
-	// and commits an empty string. That is a corrupted chart with no error anywhere.
-	// A LocalResource with no placeholders is asking to copy bytes, so copy bytes.
-	if len(values) > 0 {
-		opts = append(opts, copier.WithGoTemplate(values))
+	tplOpts, err := templatingOptions(cr.GetAnnotations(), values)
+	if err != nil {
+		return err
 	}
+	opts = append(opts, tplOpts...)
 
 	co, err := copier.NewCopier(fromLocal, toRepo.FS(), opts...)
 	if err != nil {
@@ -470,4 +462,39 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 	}
 
 	return nil
+}
+
+// templatingOptions decides WHETHER to install a templating pass, and says so in one place so a
+// reader does not have to reconstruct the rule from a switch buried in the sync path.
+//
+// Absent annotation (the default) means "template only if there is something to substitute".
+// That is the safe reading: rendering is NOT a no-op on content that merely looks like a
+// template, so a resource with no values to inject can only be damaged by a render pass.
+// `{{- toYaml x | nindent 4 }}` and `{{ include "y" . }}` fail outright — both are Helm builtins,
+// not sprig ones — and the quieter half is worse: `{{ .Values.n }}` parses, executes against an
+// empty value set, and is committed as the literal string `<no value>`. This is what blocked a
+// Helm chart publish (LocalResource publish-sock-shop-003). It mirrors the repo controller,
+// which likewise installs a pass only when it has values.
+//
+// The annotation overrides that inference in either direction, because "no values" is evidence
+// of intent, not a statement of it: a file can legitimately template with no inputs at all
+// (`{{ now | date "2006-01-02" }}`, `{{ uuidv4 }}`, `{{ env "USER" }}`), and a file that does
+// declare values can still contain regions that must survive verbatim.
+func templatingOptions(annotations map[string]string, values []template.TemplateValue) ([]copier.Option, error) {
+	switch engine := annotations[templating.Annotation]; engine {
+	case "":
+		if len(values) > 0 {
+			return []copier.Option{copier.WithGoTemplate(values)}, nil
+		}
+		return nil, nil
+	case templating.EngineGoTemplate:
+		return []copier.Option{copier.WithGoTemplate(values)}, nil
+	case templating.EngineNone:
+		return nil, nil
+	default:
+		// Refuse rather than guess. Silently picking a behaviour for a value nobody recognised
+		// is how the mismatch this fixes went unnoticed in the first place.
+		return nil, fmt.Errorf("unsupported %s %q: expected %q, %q, or the annotation to be absent",
+			templating.Annotation, engine, templating.EngineGoTemplate, templating.EngineNone)
+	}
 }

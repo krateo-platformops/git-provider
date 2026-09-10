@@ -22,6 +22,7 @@ import (
 	repov1alpha1 "github.com/krateoplatformops/git-provider/apis/repo/v1alpha1"
 	"github.com/krateoplatformops/git-provider/internal/clients/git"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/option"
+	"github.com/krateoplatformops/git-provider/internal/controllers/common/templating"
 	"github.com/krateoplatformops/git-provider/internal/tools/copier"
 	"github.com/krateoplatformops/git-provider/internal/tools/template"
 	plumbingevent "github.com/krateoplatformops/plumbing/kubeutil/event"
@@ -35,7 +36,10 @@ var (
 	homeDir    string
 )
 
-const AnnotationTemplatingEngine = "krateo.io/templating-engine"
+// Deprecated: prefer templating.Annotation. Kept as an alias so existing references keep
+// compiling; the string itself now has a single definition, shared with the localresource
+// controller so the two cannot drift.
+const AnnotationTemplatingEngine = templating.Annotation
 
 // Setup adds a controller that reconciles Token managed resources.
 func Setup(mgr ctrl.Manager, o option.SetupOptions) error {

@@ -72,6 +72,50 @@ spec:
 ```
 In your source content, you would use `{{ .environment }}` and `{{ .replicaCount }}`.
 
+Rendering is done with Go `text/template` plus the [sprig](https://masterminds.github.io/sprig/) function set.
+
+### When templating is applied
+
+Rendering is **not** a no-op on content that only looks like a template, so it is applied deliberately rather than always:
+
+| `krateo.io/templating-engine` | behaviour |
+|---|---|
+| *(absent — the default)* | Render **only if** `placeholdersToOverride` is set. Otherwise the file is committed byte-for-byte. |
+| `gotemplate` | Always render, including when no placeholders are declared. |
+| `none` | Never render, even when placeholders are declared. |
+
+Any other value is rejected with an error rather than silently treated as one of the above.
+
+The default suits the two common cases at once: a resource that declares placeholders gets them substituted, and a resource that declares none is copied verbatim.
+
+Set `gotemplate` when the content templates **without inputs** — sprig functions that need no values:
+
+```yaml
+metadata:
+  annotations:
+    krateo.io/templating-engine: gotemplate
+spec:
+  fromResource:
+    fileName: README.md
+    fromString: |
+      Generated on {{ now | date "2006-01-02" }} — build {{ uuidv4 }}.
+```
+
+Set `none` for authored content that must survive exactly, most often a **Helm chart**. Chart templates are rendered by Helm at install time, not by this provider at commit time, and pushing them through Go `text/template` first either fails or corrupts them:
+
+* `{{ toYaml ... }}`, `{{ include ... }}`, `{{ required ... }}` and `{{ tpl ... }}` are **Helm** builtins, not sprig ones — the sync fails with `function "toYaml" not defined`.
+* `{{ .Values.replicas }}` is worse, because it *parses*: it renders against an empty value set and is committed as the literal string `<no value>`.
+* `{{/* ... */}}` comment headers — which `helm create` writes at the top of every `_helpers.tpl` — are removed.
+
+```yaml
+metadata:
+  annotations:
+    krateo.io/templating-engine: none
+```
+
+With the default (no annotation and no placeholders) a chart is already copied verbatim; `none` states the intent explicitly and keeps holding if placeholders are added later.
+
+
 ## Custom Commits
 
 You can customize the commit messages used when the provider pushes changes to the target repository. A description indicating the CR that triggered the commit will be automatically appended to these messages.
