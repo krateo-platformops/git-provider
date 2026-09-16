@@ -76,7 +76,24 @@ func normalizeEmptyReasonError(err error) error {
 	return err
 }
 
-var clientMutex sync.Mutex
+// transportMu guards go-git's PROCESS-GLOBAL transport registry
+// (plumbing/transport/client.Protocols).
+//
+// That registry is a plain Go map with no synchronisation of its own:
+// client.InstallProtocol writes it, and client.getTransport reads it on every
+// single remote operation. Mutating it while any other goroutine is inside a
+// go-git remote operation is a fatal "concurrent map read and map write",
+// which tears the process down immediately - no panic to recover, no deferred
+// cleanup, no error returned to the reconciler.
+//
+// When that happens in the window between provider-runtime writing the
+// krateo.io/external-create-pending annotation and writing the create result,
+// the managed resource is wedged forever on "cannot determine creation result".
+//
+// Operations that need no custom client take the read lock and share go-git's
+// default https client; only the cookie-jar and capability paths write, under
+// the exclusive lock, and they restore the defaults before releasing it.
+var transportMu sync.RWMutex
 
 type Repo struct {
 	rawURL      string
@@ -115,27 +132,28 @@ type IndexOptions struct {
 	ToPath     string
 }
 
-func (repo *Repo) setDefaultHTTPSClient() {
-	clientMutex.Lock()
-	defer clientMutex.Unlock()
-	gitclient.InstallProtocol("https", githttp.NewClient(nil))
-}
+// cookieJarClient builds the HTTP client carrying the given git cookie.
+//
+// It returns (nil, nil) when there is no usable cookie, which means the caller
+// must leave the global transport registry completely alone - go-git's default
+// https client is already installed and is exactly what we want.
+func cookieJarClient(cookie []byte) (*http.Client, error) {
+	cookie = bytes.Trim(cookie, "\n")
+	if len(cookie) == 0 {
+		return nil, nil
+	}
 
-func (repo *Repo) setCustomHTTPSClientWithCookieJar() error {
-	// Initialize a CookieJar to hold our cookies
+	split := bytes.Split(cookie, []byte("\t"))
+	if len(split) < 7 {
+		return nil, nil
+	}
+
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return fmt.Errorf("error creating cookie jar: %w", err)
+		return nil, fmt.Errorf("error creating cookie jar: %w", err)
 	}
 
-	repo.cookie = bytes.Trim(repo.cookie, "\n")
-	split := bytes.Split(repo.cookie, []byte("\t"))
-
-	if len(split) < 7 {
-		return nil
-	}
-
-	cookie := &http.Cookie{
+	c := &http.Cookie{
 		Name:       string(split[5]),
 		Value:      string(split[6]),
 		RawExpires: string(split[4]),
@@ -148,25 +166,78 @@ func (repo *Repo) setCustomHTTPSClientWithCookieJar() error {
 	jar.SetCookies(
 		&url.URL{
 			Scheme: "https",
-			Host:   cookie.Domain,
+			Host:   c.Domain,
 		},
 		[]*http.Cookie{
-			cookie,
+			c,
 		},
 	)
 
-	customClient := &http.Client{
-		Jar: jar,
-	}
-
-	clientMutex.Lock()
-	defer clientMutex.Unlock()
-	gitclient.InstallProtocol("https", githttp.NewClient(customClient))
-
-	return err
+	return &http.Client{Jar: jar}, nil
 }
 
+// azureDevOps reports whether the URL points at Azure DevOps, which needs the
+// go-git capability workaround applied by the callers below.
+func azureDevOps(rawURL string) bool {
+	return strings.Contains(rawURL, "dev.azure.com")
+}
+
+// lockTransport guards go-git's process-global state for the duration of a
+// single remote git operation and returns the matching release function, which
+// the caller must invoke exactly once - normally via defer.
+//
+// Set mutatesGlobals when the operation will assign to
+// transport.UnsupportedCapabilities, which is a process-global too.
+//
+// lockTransport must NOT be called again while the returned release function is
+// still outstanding: sync.RWMutex is not reentrant, so a nested call deadlocks.
+// That is why the remote helpers below come in a locking exported form and a
+// non-locking unexported form (see GetLatestCommitRemote/getLatestCommitRemote),
+// and why the purely local operations - Branch, Commit, UpdateIndex,
+// GetLatestCommit - no longer touch the registry at all.
+func lockTransport(cookie []byte, mutatesGlobals bool) (func(), error) {
+	custom, err := cookieJarClient(cookie)
+	if err != nil {
+		return nil, err
+	}
+
+	if custom == nil && !mutatesGlobals {
+		// Nothing to install: go-git's default https client is already in the
+		// registry. Hold the read lock so that no writer can mutate the map
+		// out from under go-git while it reads it.
+		transportMu.RLock()
+		return transportMu.RUnlock, nil
+	}
+
+	transportMu.Lock()
+	if custom == nil {
+		return transportMu.Unlock, nil
+	}
+
+	gitclient.InstallProtocol("https", githttp.NewClient(custom))
+	return func() {
+		// Restore the exact singleton go-git ships in its registry, rather than
+		// allocating an equivalent-but-different client on every release.
+		gitclient.InstallProtocol("https", githttp.DefaultClient)
+		transportMu.Unlock()
+	}, nil
+}
+
+// GetLatestCommitRemote lists the remote refs and returns the tip of the
+// requested branch. It takes the transport lock; use getLatestCommitRemote when
+// the caller already holds it.
 func GetLatestCommitRemote(opts ListOptions) (*string, error) {
+	release, err := lockTransport(opts.GitCookies, false)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	return getLatestCommitRemote(opts)
+}
+
+// getLatestCommitRemote assumes the caller already holds the transport lock.
+func getLatestCommitRemote(opts ListOptions) (*string, error) {
 	tmpDir, err := os.MkdirTemp(opts.HomeDir, "git-provider-list-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
@@ -188,13 +259,6 @@ func GetLatestCommitRemote(opts ListOptions) (*string, error) {
 		cookie: opts.GitCookies,
 		tmpDir: tmpDir,
 	}
-
-	if len(res.cookie) > 0 {
-		if err := res.setCustomHTTPSClientWithCookieJar(); err != nil {
-			return nil, err
-		}
-	}
-	defer res.setDefaultHTTPSClient()
 
 	res.repo, err = git.Init(res.storer, res.fs)
 	if err != nil {
@@ -255,12 +319,11 @@ func isInGitCommitHistory(ctx context.Context, opts ListOptions, hash string) (b
 		tmpDir: tmpDir,
 	}
 
-	if len(res.cookie) > 0 {
-		if err := res.setCustomHTTPSClientWithCookieJar(); err != nil {
-			return false, fmt.Errorf("failed to set custom HTTPS client: %w", err)
-		}
+	release, err := lockTransport(opts.GitCookies, azureDevOps(opts.URL))
+	if err != nil {
+		return false, fmt.Errorf("failed to set custom HTTPS client: %w", err)
 	}
-	defer res.setDefaultHTTPSClient()
+	defer release()
 
 	cloneOpts := git.CloneOptions{
 		RemoteName:      "origin",
@@ -271,14 +334,16 @@ func isInGitCommitHistory(ctx context.Context, opts ListOptions, hash string) (b
 		InsecureSkipTLS: opts.Insecure,
 	}
 
-	oldUnsupportedCaps := transport.UnsupportedCapabilities
-	defer restoreUnsupportedCapabilities(oldUnsupportedCaps)
-
 	// Azure DevOps requires multi_ack and multi_ack_detailed capabilities, which go-git doesn't
 	// implement. But: it's possible to do a full clone by saying it's _not_ _un_supported, in which
 	// case the library happily functions so long as it doesn't _actually_ get a multi_ack packet. See
 	// https://github.com/go-git/go-git/blob/v5.5.1/_examples/azure_devops/main.go.
-	if strings.Contains(opts.URL, "dev.azure.com") {
+	//
+	// transport.UnsupportedCapabilities is a process-global as well, so only read or write it when
+	// we actually need the workaround; lockTransport gave us the exclusive lock in that case.
+	if azureDevOps(opts.URL) {
+		oldUnsupportedCaps := transport.UnsupportedCapabilities
+		defer restoreUnsupportedCapabilities(oldUnsupportedCaps)
 		transport.UnsupportedCapabilities = []capability.Capability{
 			capability.ThinPack,
 		}
@@ -344,12 +409,11 @@ func IsFuncInGitCommitHistory(ctx context.Context, opts ListOptions, f func(comm
 		tmpDir: tmpDir,
 	}
 
-	if len(res.cookie) > 0 {
-		if err := res.setCustomHTTPSClientWithCookieJar(); err != nil {
-			return plumbing.Hash{}, err
-		}
+	release, err := lockTransport(opts.GitCookies, azureDevOps(opts.URL))
+	if err != nil {
+		return plumbing.Hash{}, err
 	}
-	defer res.setDefaultHTTPSClient()
+	defer release()
 
 	cloneOpts := git.CloneOptions{
 		RemoteName:      "origin",
@@ -360,14 +424,16 @@ func IsFuncInGitCommitHistory(ctx context.Context, opts ListOptions, f func(comm
 		InsecureSkipTLS: opts.Insecure,
 	}
 
-	oldUnsupportedCaps := transport.UnsupportedCapabilities
-	defer restoreUnsupportedCapabilities(oldUnsupportedCaps)
-
 	// Azure DevOps requires multi_ack and multi_ack_detailed capabilities, which go-git doesn't
 	// implement. But: it's possible to do a full clone by saying it's _not_ _un_supported, in which
 	// case the library happily functions so long as it doesn't _actually_ get a multi_ack packet. See
 	// https://github.com/go-git/go-git/blob/v5.5.1/_examples/azure_devops/main.go.
-	if strings.Contains(opts.URL, "dev.azure.com") {
+	//
+	// transport.UnsupportedCapabilities is a process-global as well, so only read or write it when
+	// we actually need the workaround; lockTransport gave us the exclusive lock in that case.
+	if azureDevOps(opts.URL) {
+		oldUnsupportedCaps := transport.UnsupportedCapabilities
+		defer restoreUnsupportedCapabilities(oldUnsupportedCaps)
 		transport.UnsupportedCapabilities = []capability.Capability{
 			capability.ThinPack,
 		}
@@ -409,12 +475,9 @@ func IsFuncInGitCommitHistory(ctx context.Context, opts ListOptions, f func(comm
 The function simulate the application of filemode of each from the origin repo (contained in "IndexOption.FromPath") to the destination repo (to files contained in IndexOption.ToPath)
 ---- git update-index --chmod
 */
+// UpdateIndex is a purely local worktree operation: it never opens a transport,
+// so it must not touch the global transport registry.
 func (s *Repo) UpdateIndex(idx *IndexOptions) error {
-	if err := s.setCustomHTTPSClientWithCookieJar(); err != nil {
-		return err
-	}
-	defer s.setDefaultHTTPSClient()
-
 	getIndexRelative := func(basepath, targpath string) string {
 		if len(basepath) > 0 && basepath[0] != '/' {
 			basepath = fmt.Sprintf("%c%s", '/', basepath)
@@ -487,23 +550,24 @@ func clone(ctx context.Context, opts CloneOptions) (*Repo, error) {
 		tmpDir: tmpDir,
 	}
 
-	if len(res.cookie) > 0 {
-		if err := res.setCustomHTTPSClientWithCookieJar(); err != nil {
-			return nil, err
-		}
+	// One lock for the whole clone, covering the nested getLatestCommitRemote call below.
+	mutatesGlobals := opts.UnsupportedCapabilities || azureDevOps(opts.URL)
+	release, err := lockTransport(opts.GitCookies, mutatesGlobals)
+	if err != nil {
+		return nil, err
 	}
-
-	if opts.UnsupportedCapabilities {
-		transport.UnsupportedCapabilities = []capability.Capability{
-			capability.ThinPack,
-		}
-	}
+	defer release()
 
 	// Azure DevOps requires multi_ack and multi_ack_detailed capabilities, which go-git doesn't
 	// implement. But: it's possible to do a full clone by saying it's _not_ _un_supported, in which
 	// case the library happily functions so long as it doesn't _actually_ get a multi_ack packet. See
 	// https://github.com/go-git/go-git/blob/v5.5.1/_examples/azure_devops/main.go.
-	if strings.Contains(opts.URL, "dev.azure.com") {
+	//
+	// Restore the previous value on the way out instead of leaking this process-global to every
+	// later clone, the way the old code did.
+	if mutatesGlobals {
+		oldUnsupportedCaps := transport.UnsupportedCapabilities
+		defer restoreUnsupportedCapabilities(oldUnsupportedCaps)
 		transport.UnsupportedCapabilities = []capability.Capability{
 			capability.ThinPack,
 		}
@@ -519,7 +583,7 @@ func clone(ctx context.Context, opts CloneOptions) (*Repo, error) {
 		InsecureSkipTLS: opts.Insecure,
 	}
 	isOrphan := true
-	_, err = GetLatestCommitRemote(ListOptions{
+	_, err = getLatestCommitRemote(ListOptions{
 		URL:        opts.URL,
 		Auth:       opts.Auth,
 		Insecure:   opts.Insecure,
@@ -543,11 +607,6 @@ func clone(ctx context.Context, opts CloneOptions) (*Repo, error) {
 		}
 		res.isNewBranch = ptr.To(true)
 	}
-	if len(res.cookie) > 0 {
-		if err := res.setCustomHTTPSClientWithCookieJar(); err != nil {
-			return nil, err
-		}
-	}
 	res.repo, err = git.Clone(res.storer, res.fs, &cloneOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to clone repository: %w", normalizeEmptyReasonError(err))
@@ -558,7 +617,6 @@ func clone(ctx context.Context, opts CloneOptions) (*Repo, error) {
 		Orphan: isOrphan,
 	})
 
-	res.setDefaultHTTPSClient()
 	return res, err
 }
 
@@ -570,11 +628,9 @@ func IsInGitCommitHistoryContext(ctx context.Context, opts ListOptions, hash str
 	return isInGitCommitHistory(ctx, opts, hash)
 }
 
+// Exists stats the local filesystem: it never opens a transport, so it must not
+// touch the global transport registry.
 func (s *Repo) Exists(path string) (bool, error) {
-	if err := s.setCustomHTTPSClientWithCookieJar(); err != nil {
-		return false, err
-	}
-	defer s.setDefaultHTTPSClient()
 	_, err := s.fs.Stat(path)
 	if err != nil {
 		if utils.IsErr(ErrRepositoryNotFound, err) {
@@ -598,11 +654,9 @@ func (s *Repo) Cleanup() error {
 	return nil
 }
 
+// CurrentBranch reads a local ref: it never opens a transport, so it must not
+// touch the global transport registry.
 func (s *Repo) CurrentBranch() string {
-	if err := s.setCustomHTTPSClientWithCookieJar(); err != nil {
-		return ""
-	}
-	defer s.setDefaultHTTPSClient()
 	//head, _ := s.repo.Head()
 	head, _ := s.repo.Reference(plumbing.HEAD, false)
 
@@ -620,12 +674,10 @@ Switch braches or create according to parameters passed in createOpt.
   - if creteOpt is different from nil and createOpt.Create is true a new branch is created checking out from the branch specified during clone - `git checkout -b branch-name`
   - if creteOpt is different from nil and both createOpt.Create and createOpt.Orphan are true a new branch is created from blank with no history or parents - `git switch --orphan branch-name`
 */
+// Branch is a purely local operation on refs and the worktree: it never opens a
+// transport, so it must not touch the global transport registry. clone calls it
+// while holding the transport lock, which a lock here would deadlock against.
 func (s *Repo) Branch(name string, createOpt *CreateOpt) error {
-	if err := s.setCustomHTTPSClientWithCookieJar(); err != nil {
-		return err
-	}
-	defer s.setDefaultHTTPSClient()
-
 	ref := plumbing.NewBranchReferenceName(name)
 	if createOpt != nil && createOpt.Create {
 		ref = plumbing.NewBranchReferenceName(name)
@@ -667,12 +719,9 @@ func (s *Repo) Branch(name string, createOpt *CreateOpt) error {
 	})
 }
 
+// Commit is a purely local worktree operation: it never opens a transport, so it
+// must not touch the global transport registry.
 func (s *Repo) Commit(path, msg string, opt *IndexOptions) (plumbing.Hash, error) {
-	if err := s.setCustomHTTPSClientWithCookieJar(); err != nil {
-		return plumbing.Hash{}, fmt.Errorf("failed to set custom HTTPS client: %w", err)
-	}
-	defer s.setDefaultHTTPSClient()
-
 	wt, err := s.repo.Worktree()
 	if err != nil {
 		return plumbing.Hash{}, fmt.Errorf("failed to get worktree: %w", err)
@@ -715,10 +764,11 @@ func (s *Repo) Commit(path, msg string, opt *IndexOptions) (plumbing.Hash, error
 }
 
 func (s *Repo) Push(downstream, branch string, insecure bool) error {
-	if err := s.setCustomHTTPSClientWithCookieJar(); err != nil {
+	release, err := lockTransport(s.cookie, false)
+	if err != nil {
 		return err
 	}
-	defer s.setDefaultHTTPSClient()
+	defer release()
 
 	//Push the code to the remote
 	if len(branch) == 0 {
@@ -772,10 +822,11 @@ func (s *Repo) Push(downstream, branch string, insecure bool) error {
 }
 
 func Pull(s *Repo, insecure bool) error {
-	if err := s.setCustomHTTPSClientWithCookieJar(); err != nil {
+	release, err := lockTransport(s.cookie, false)
+	if err != nil {
 		return err
 	}
-	defer s.setDefaultHTTPSClient()
+	defer release()
 
 	// Get the working directory for the repository
 	wt, err := s.repo.Worktree()
@@ -798,11 +849,9 @@ func Pull(s *Repo, insecure bool) error {
 	return err
 }
 
+// GetLatestCommit reads a local ref: it never opens a transport, so it must not
+// touch the global transport registry.
 func (s *Repo) GetLatestCommit(branch string) (string, error) {
-	if err := s.setCustomHTTPSClientWithCookieJar(); err != nil {
-		return "", err
-	}
-	defer s.setDefaultHTTPSClient()
 	refName := plumbing.NewBranchReferenceName(branch)
 	ref, err := s.repo.Reference(refName, true)
 	if err != nil {
