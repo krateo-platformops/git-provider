@@ -3,7 +3,7 @@ package option
 import (
 	"time"
 
-	"github.com/krateoplatformops/provider-runtime/pkg/controller"
+	"github.com/krateo-platformops/provider-runtime/pkg/controller"
 )
 
 type GitOptions struct {

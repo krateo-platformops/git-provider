@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	repov1alpha1 "github.com/krateoplatformops/git-provider/apis/repo/v1alpha1"
-	commonv1 "github.com/krateoplatformops/provider-runtime/apis/common/v1"
+	commonv1 "github.com/krateo-platformops/provider-runtime/apis/common/v1"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )

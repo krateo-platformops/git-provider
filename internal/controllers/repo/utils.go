@@ -9,7 +9,7 @@ import (
 	repov1alpha1 "github.com/krateoplatformops/git-provider/apis/repo/v1alpha1"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
-	"github.com/krateoplatformops/provider-runtime/pkg/resource"
+	"github.com/krateo-platformops/provider-runtime/pkg/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 

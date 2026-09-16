@@ -28,10 +28,10 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/go-logr/logr"
-	prettylog "github.com/krateoplatformops/plumbing/slogs/pretty"
-	"github.com/krateoplatformops/provider-runtime/pkg/controller"
-	"github.com/krateoplatformops/provider-runtime/pkg/logging"
-	"github.com/krateoplatformops/provider-runtime/pkg/ratelimiter"
+	"github.com/krateo-platformops/plumbing/logger"
+	"github.com/krateo-platformops/provider-runtime/pkg/controller"
+	"github.com/krateo-platformops/provider-runtime/pkg/logging"
+	"github.com/krateo-platformops/provider-runtime/pkg/ratelimiter"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -39,8 +39,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/krateoplatformops/plumbing/e2e"
-	xenv "github.com/krateoplatformops/plumbing/env"
+	"github.com/krateo-platformops/plumbing/e2e"
+	xenv "github.com/krateo-platformops/plumbing/env"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	clientsetscheme "k8s.io/client-go/kubernetes/scheme"
 
@@ -368,14 +368,7 @@ func TestController(t *testing.T) {
 	os.Setenv("DEBUG", "TRUE")
 
 	setupController := func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		lh := prettylog.New(&slog.HandlerOptions{
-			Level:     slog.LevelDebug,
-			AddSource: false,
-		},
-			prettylog.WithDestinationWriter(os.Stderr),
-			prettylog.WithColor(),
-			prettylog.WithOutputEmptyAttrs(),
-		)
+		lh := logger.NewHandler(true, os.Stderr)
 
 		logrlog := logr.FromSlogHandler(slog.New(lh).Handler())
 		log := logging.NewLogrLogger(logrlog)

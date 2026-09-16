@@ -8,17 +8,17 @@ import (
 	"os"
 	"strings"
 
-	commonv1 "github.com/krateoplatformops/provider-runtime/apis/common/v1"
+	commonv1 "github.com/krateo-platformops/provider-runtime/apis/common/v1"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/krateoplatformops/provider-runtime/pkg/logging"
-	"github.com/krateoplatformops/provider-runtime/pkg/meta"
-	"github.com/krateoplatformops/provider-runtime/pkg/ratelimiter"
+	"github.com/krateo-platformops/provider-runtime/pkg/logging"
+	"github.com/krateo-platformops/provider-runtime/pkg/meta"
+	"github.com/krateo-platformops/provider-runtime/pkg/ratelimiter"
 
-	"github.com/krateoplatformops/provider-runtime/pkg/reconciler"
-	"github.com/krateoplatformops/provider-runtime/pkg/resource"
+	"github.com/krateo-platformops/provider-runtime/pkg/reconciler"
+	"github.com/krateo-platformops/provider-runtime/pkg/resource"
 
 	repov1alpha1 "github.com/krateoplatformops/git-provider/apis/repo/v1alpha1"
 	"github.com/krateoplatformops/git-provider/internal/clients/git"
@@ -26,9 +26,9 @@ import (
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/templating"
 	"github.com/krateoplatformops/git-provider/internal/tools/copier"
 	"github.com/krateoplatformops/git-provider/internal/tools/template"
-	plumbingevent "github.com/krateoplatformops/plumbing/kubeutil/event"
-	"github.com/krateoplatformops/plumbing/kubeutil/eventrecorder"
-	"github.com/krateoplatformops/plumbing/ptr"
+	plumbingevent "github.com/krateo-platformops/plumbing/kubeutil/event"
+	"github.com/krateo-platformops/plumbing/kubeutil/eventrecorder"
+	"github.com/krateo-platformops/plumbing/ptr"
 	record "k8s.io/client-go/tools/events"
 )
 
