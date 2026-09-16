@@ -26,16 +26,16 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/require"
 
+	"github.com/krateo-platformops/plumbing/logger"
+	commonv1 "github.com/krateo-platformops/provider-runtime/apis/common/v1"
+	"github.com/krateo-platformops/provider-runtime/pkg/controller"
+	"github.com/krateo-platformops/provider-runtime/pkg/logging"
+	"github.com/krateo-platformops/provider-runtime/pkg/ratelimiter"
 	"github.com/krateoplatformops/git-provider/apis"
 	repov1alpha1 "github.com/krateoplatformops/git-provider/apis/repo/v1alpha1"
 	gitclient "github.com/krateoplatformops/git-provider/internal/clients/git"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/option"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/templating"
-	prettylog "github.com/krateoplatformops/plumbing/slogs/pretty"
-	commonv1 "github.com/krateoplatformops/provider-runtime/apis/common/v1"
-	"github.com/krateoplatformops/provider-runtime/pkg/controller"
-	"github.com/krateoplatformops/provider-runtime/pkg/logging"
-	"github.com/krateoplatformops/provider-runtime/pkg/ratelimiter"
 
 	v1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -44,7 +44,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	xenv "github.com/krateoplatformops/plumbing/env"
+	xenv "github.com/krateo-platformops/plumbing/env"
 	"sigs.k8s.io/e2e-framework/klient/decoder"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/pkg/env"
@@ -243,14 +243,7 @@ func waitForGitea(ctx context.Context) error {
 }
 
 func setupController(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-	lh := prettylog.New(&slog.HandlerOptions{
-		Level:     slog.LevelDebug,
-		AddSource: false,
-	},
-		prettylog.WithDestinationWriter(os.Stderr),
-		prettylog.WithColor(),
-		prettylog.WithOutputEmptyAttrs(),
-	)
+	lh := logger.NewHandler(true, os.Stderr)
 
 	logrlog := logr.FromSlogHandler(slog.New(lh).Handler())
 	log := logging.NewLogrLogger(logrlog)

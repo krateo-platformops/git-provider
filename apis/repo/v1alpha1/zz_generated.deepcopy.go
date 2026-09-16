@@ -6,7 +6,7 @@ package v1alpha1
 
 import (
 	commonv1alpha1 "github.com/krateoplatformops/git-provider/apis/common/v1alpha1"
-	"github.com/krateoplatformops/provider-runtime/apis/common/v1"
+	"github.com/krateo-platformops/provider-runtime/apis/common/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 

@@ -7,8 +7,8 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/pkg/errors"
 
-	commonv1 "github.com/krateoplatformops/provider-runtime/apis/common/v1"
-	"github.com/krateoplatformops/provider-runtime/pkg/resource"
+	commonv1 "github.com/krateo-platformops/provider-runtime/apis/common/v1"
+	"github.com/krateo-platformops/provider-runtime/pkg/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -18,11 +18,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	plumbingevent "github.com/krateoplatformops/plumbing/kubeutil/event"
-	"github.com/krateoplatformops/plumbing/kubeutil/eventrecorder"
-	"github.com/krateoplatformops/provider-runtime/pkg/logging"
-	"github.com/krateoplatformops/provider-runtime/pkg/meta"
-	"github.com/krateoplatformops/provider-runtime/pkg/ratelimiter"
+	plumbingevent "github.com/krateo-platformops/plumbing/kubeutil/event"
+	"github.com/krateo-platformops/plumbing/kubeutil/eventrecorder"
+	"github.com/krateo-platformops/provider-runtime/pkg/logging"
+	"github.com/krateo-platformops/provider-runtime/pkg/meta"
+	"github.com/krateo-platformops/provider-runtime/pkg/ratelimiter"
 
 	localResourcev1alpha1 "github.com/krateoplatformops/git-provider/apis/localresource/v1alpha1"
 	"github.com/krateoplatformops/git-provider/internal/clients/git"
@@ -33,9 +33,9 @@ import (
 	"github.com/krateoplatformops/git-provider/internal/tools/copier"
 	"github.com/krateoplatformops/git-provider/internal/tools/localfs"
 	"github.com/krateoplatformops/git-provider/internal/tools/template"
-	"github.com/krateoplatformops/plumbing/ptr"
-	contexttools "github.com/krateoplatformops/provider-runtime/pkg/context"
-	"github.com/krateoplatformops/provider-runtime/pkg/reconciler"
+	"github.com/krateo-platformops/plumbing/ptr"
+	contexttools "github.com/krateo-platformops/provider-runtime/pkg/context"
+	"github.com/krateo-platformops/provider-runtime/pkg/reconciler"
 
 	corev1 "k8s.io/api/core/v1"
 )

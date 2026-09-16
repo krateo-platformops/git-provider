@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	contexttools "github.com/krateoplatformops/provider-runtime/pkg/context"
-	"github.com/krateoplatformops/provider-runtime/pkg/logging"
+	contexttools "github.com/krateo-platformops/provider-runtime/pkg/context"
+	"github.com/krateo-platformops/provider-runtime/pkg/logging"
 
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	gitclient "github.com/go-git/go-git/v5/plumbing/transport/client"
@@ -33,7 +33,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"github.com/krateoplatformops/git-provider/internal/utils"
-	"github.com/krateoplatformops/plumbing/ptr"
+	"github.com/krateo-platformops/plumbing/ptr"
 )
 
 var (

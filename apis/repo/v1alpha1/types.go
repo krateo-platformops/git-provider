@@ -2,9 +2,9 @@ package v1alpha1
 
 import (
 	commonapis "github.com/krateoplatformops/git-provider/apis/common/v1alpha1"
-	commonv1 "github.com/krateoplatformops/provider-runtime/apis/common/v1"
-	prv1 "github.com/krateoplatformops/provider-runtime/apis/common/v1"
-	"github.com/krateoplatformops/provider-runtime/pkg/resource"
+	commonv1 "github.com/krateo-platformops/provider-runtime/apis/common/v1"
+	prv1 "github.com/krateo-platformops/provider-runtime/apis/common/v1"
+	"github.com/krateo-platformops/provider-runtime/pkg/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

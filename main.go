@@ -11,16 +11,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 
 	"github.com/go-logr/logr"
+	"github.com/krateo-platformops/plumbing/env"
+	"github.com/krateo-platformops/plumbing/logger"
+	"github.com/krateo-platformops/provider-runtime/pkg/logging"
+	"github.com/krateo-platformops/provider-runtime/pkg/ratelimiter"
 	"github.com/krateoplatformops/git-provider/apis"
-	"github.com/krateoplatformops/plumbing/env"
-	prettylog "github.com/krateoplatformops/plumbing/slogs/pretty"
-	"github.com/krateoplatformops/provider-runtime/pkg/logging"
-	"github.com/krateoplatformops/provider-runtime/pkg/ratelimiter"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/krateo-platformops/provider-runtime/pkg/controller"
 	"github.com/krateoplatformops/git-provider/internal/controllers"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/option"
-	"github.com/krateoplatformops/provider-runtime/pkg/controller"
 
 	"github.com/stoewer/go-strcase"
 )
@@ -55,14 +55,11 @@ func main() {
 		logLevel = slog.LevelDebug
 	}
 
-	lh := prettylog.New(&slog.HandlerOptions{
-		Level:     logLevel,
-		AddSource: false,
-	},
-		prettylog.WithDestinationWriter(os.Stderr),
-		prettylog.WithColor(),
-		prettylog.WithOutputEmptyAttrs(),
-	)
+	// The fork's plumbing has no slogs/pretty. Use the shared structured handler instead, which is
+	// what every other Krateo component emits: one JSON object per line in the OTel log model, so
+	// git-provider's logs become logs-ingester compatible like the rest of the platform. This is a
+	// deliberate behaviour change from the previous coloured console output.
+	lh := logger.NewHandler(logLevel == slog.LevelDebug, os.Stderr)
 
 	logrlog := logr.FromSlogHandler(slog.New(lh).Handler())
 	log := logging.NewLogrLogger(logrlog)
