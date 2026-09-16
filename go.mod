@@ -11,7 +11,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/go-logr/logr v1.4.3
 	github.com/krateo-platformops/plumbing v1.14.3
-	github.com/krateo-platformops/provider-runtime v1.3.0
+	github.com/krateo-platformops/provider-runtime v1.3.1
 	github.com/moby/moby/api v1.52.0
 	github.com/moby/moby/client v0.1.0
 	github.com/pkg/errors v0.9.1
