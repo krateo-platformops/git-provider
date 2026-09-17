@@ -512,8 +512,17 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 		cr.Status.TargetCommitId = toLocalResourceCommitId
 		cr.Status.TargetBranch = toRepo.CurrentBranch()
 
-		err = e.kube.Status().Update(ctx, cr)
-		if err != nil {
+		// SAME RETRY AS THE COMMITTED PATH, and this branch needs it MORE, not less.
+		//
+		// A bare Update here is byte-for-byte the failure #16 describes: lose the conflict and the
+		// sync returns with external-create-pending set and no recorded result. This variant is the
+		// one that cannot self-heal — the branch makes NO commit, so a later Observe finds no footer
+		// to recognise the resource by and cannot adopt it.
+		//
+		// The sync retry added in #17 makes this path MORE likely to be taken, not less: a retried
+		// attempt re-clones a tree that may already contain the file from the attempt that actually
+		// won the push, so the commit becomes a no-op and lands exactly here.
+		if err := e.updateStatusWithRetry(ctx, cr); err != nil {
 			return fmt.Errorf("unable to update status: %w", err)
 		}
 		return nil
