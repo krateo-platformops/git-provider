@@ -3,17 +3,22 @@ package localresource
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/pkg/errors"
 
 	commonv1 "github.com/krateo-platformops/provider-runtime/apis/common/v1"
 	"github.com/krateo-platformops/provider-runtime/pkg/resource"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	record "k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,6 +29,9 @@ import (
 	"github.com/krateo-platformops/provider-runtime/pkg/meta"
 	"github.com/krateo-platformops/provider-runtime/pkg/ratelimiter"
 
+	"github.com/krateo-platformops/plumbing/ptr"
+	contexttools "github.com/krateo-platformops/provider-runtime/pkg/context"
+	"github.com/krateo-platformops/provider-runtime/pkg/reconciler"
 	localResourcev1alpha1 "github.com/krateoplatformops/git-provider/apis/localresource/v1alpha1"
 	"github.com/krateoplatformops/git-provider/internal/clients/git"
 	credentialhelper "github.com/krateoplatformops/git-provider/internal/controllers/common/credentialHelper"
@@ -33,9 +41,6 @@ import (
 	"github.com/krateoplatformops/git-provider/internal/tools/copier"
 	"github.com/krateoplatformops/git-provider/internal/tools/localfs"
 	"github.com/krateoplatformops/git-provider/internal/tools/template"
-	"github.com/krateo-platformops/plumbing/ptr"
-	contexttools "github.com/krateo-platformops/provider-runtime/pkg/context"
-	"github.com/krateo-platformops/provider-runtime/pkg/reconciler"
 
 	corev1 "k8s.io/api/core/v1"
 )
@@ -265,7 +270,7 @@ func (e *external) Create(ctx context.Context, mg resource.Managed) error {
 	}
 	log.Info("Creating resource")
 	cr.Status.SetConditions(commonv1.Creating())
-	return e.SyncLocalResources(ctx, cr, cr.Spec.CreateCommitMessage)
+	return e.syncWithRetry(ctx, cr, cr.Spec.CreateCommitMessage)
 }
 
 func (e *external) Update(ctx context.Context, mg resource.Managed) error {
@@ -286,7 +291,7 @@ func (e *external) Update(ctx context.Context, mg resource.Managed) error {
 
 	log.Info("Updating resource")
 	cr.Status.SetConditions(commonv1.Creating())
-	return e.SyncLocalResources(ctx, cr, cr.Spec.UpdateCommitMessage)
+	return e.syncWithRetry(ctx, cr, cr.Spec.UpdateCommitMessage)
 }
 
 func (e *external) Delete(ctx context.Context, mg resource.Managed) error {
@@ -307,6 +312,55 @@ func (e *external) Delete(ctx context.Context, mg resource.Managed) error {
 	cr.Status.SetConditions(commonv1.Deleting())
 
 	return nil // noop
+}
+
+// refContentionRetry paces re-attempts when a concurrent push loses the ref race. Jittered by the
+// caller so siblings that started together do not retry in lockstep and collide again.
+var refContentionRetry = wait.Backoff{Duration: 400 * time.Millisecond, Factor: 2.0, Jitter: 0.5, Steps: 6}
+
+// isRefContention reports whether err is another writer having moved the branch first.
+//
+// A publish fans out one LocalResource PER FILE and they all push to the SAME branch at once. Git
+// only advances a ref from the commit the pusher expects, so the losers get:
+//
+//	cannot lock ref 'refs/heads/builder/<slug>': is at <sha> but expected <sha>
+//
+// That is the ordinary outcome of concurrent writers, not a failure of this resource. Retrying is
+// the correct response — and it must re-CLONE, which is why syncWithRetry retries the whole sync
+// rather than just the push: the local ref is stale, so pushing it again fails identically.
+func isRefContention(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "cannot lock ref") ||
+		strings.Contains(msg, "non-fast-forward") ||
+		strings.Contains(msg, "reference already exists")
+}
+
+// syncWithRetry runs SyncLocalResources, re-cloning and retrying while the branch is being moved by
+// a sibling. Any other error is returned immediately — this is a contention retry, not a blanket one.
+func (e *external) syncWithRetry(ctx context.Context, cr *localResourcev1alpha1.LocalResource, commitMessage string) error {
+	log := contexttools.LoggerFromCtx(ctx, e.log)
+	var lastErr error
+	attempt := 0
+	err := wait.ExponentialBackoffWithContext(ctx, refContentionRetry, func(ctx context.Context) (bool, error) {
+		attempt++
+		lastErr = e.SyncLocalResources(ctx, cr, commitMessage)
+		if lastErr == nil {
+			return true, nil
+		}
+		if !isRefContention(lastErr) {
+			return false, lastErr
+		}
+		log.Debug("branch moved by a concurrent push, re-cloning and retrying",
+			"attempt", attempt, "branch", cr.Spec.ToRepo.Branch, "err", lastErr.Error())
+		return false, nil
+	})
+	if wait.Interrupted(err) && lastErr != nil {
+		return lastErr
+	}
+	return err
 }
 
 func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1alpha1.LocalResource, commitMessage string) error {
@@ -330,7 +384,11 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 	log := contexttools.LoggerFromCtx(ctx, e.log)
 
 	log.Debug("Target LocalResource cloned", "url", spec.ToRepo.Url)
-	e.rec.Eventf(cr, nil, corev1.EventTypeNormal, "TargetLocalResourceCloned", "",
+	// `action` (5th arg) is REQUIRED by the events API. It was "", so the apiserver rejected every
+	// event this controller emitted — "Event ... is invalid: action: Required value" — and the
+	// controller produced no usable event trail at all, which is part of why the wedge below was
+	// hard to diagnose from the cluster.
+	e.rec.Eventf(cr, nil, corev1.EventTypeNormal, "TargetLocalResourceCloned", "Clone",
 		"Successfully cloned target LocalResource: %s", spec.ToRepo.Url)
 	log.Debug(fmt.Sprintf("Target LocalResource on branch %s", toRepo.CurrentBranch()))
 
@@ -469,18 +527,53 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 		return fmt.Errorf("unable to push target LocalResource: %w", err)
 	}
 	log.Info("Target LocalResource pushed", "branch", toRepo.CurrentBranch(), "commitId", toLocalResourceCommitId)
-	e.rec.Eventf(cr, nil, corev1.EventTypeNormal, "LocalResourcePushSuccess", "",
+	e.rec.Eventf(cr, nil, corev1.EventTypeNormal, "LocalResourcePushSuccess", "Push",
 		fmt.Sprintf("Target LocalResource pushed branch %s", toRepo.CurrentBranch()))
 
 	meta.SetExternalName(cr, toLocalResourceCommitId)
 	cr.Status.TargetCommitId = toLocalResourceCommitId
 	cr.Status.TargetBranch = toRepo.CurrentBranch()
-	err = e.kube.Status().Update(ctx, cr)
-	if err != nil {
+	if err := e.updateStatusWithRetry(ctx, cr); err != nil {
 		return fmt.Errorf("unable to update status: %w", err)
 	}
 
 	return nil
+}
+
+// updateStatusWithRetry persists the sync outcome, re-reading the object when the write loses an
+// optimistic-concurrency race.
+//
+// A LOST CONFLICT USED TO BE PERMANENT, and that is the whole bug. This write happens AFTER the
+// commit has already been pushed. The reconciler holds its own copy of the object, so any
+// concurrent write — the owning composition re-applying, another controller touching metadata —
+// makes the update fail with "the object has been modified; please apply your changes to the latest
+// version". Returning that aborts the sync with the push already done, so the create bookkeeping
+// never records success: `krateo.io/external-create-pending` stays set, `external-create-succeeded`
+// is never written, and every later reconcile correctly refuses to proceed with "cannot determine
+// creation result". The resource is then stuck until a human removes the annotation, even though
+// the work it was asked to do completed.
+//
+// Observed four times on one cluster, always on the LATER indices of a multi-file publish — the
+// ones whose pushes land inside the contention window created by their own siblings.
+func (e *external) updateStatusWithRetry(ctx context.Context, cr *localResourcev1alpha1.LocalResource) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		err := e.kube.Status().Update(ctx, cr)
+		if err == nil || !apierrors.IsConflict(err) {
+			return err
+		}
+		// Refresh metadata (resourceVersion) from the server but KEEP the status this sync produced
+		// and the external name just set, then let RetryOnConflict try the write again.
+		latest := &localResourcev1alpha1.LocalResource{}
+		if getErr := e.kube.Get(ctx, client.ObjectKeyFromObject(cr), latest); getErr != nil {
+			return getErr
+		}
+		status := cr.Status
+		externalName := meta.GetExternalName(cr)
+		latest.DeepCopyInto(cr)
+		cr.Status = status
+		meta.SetExternalName(cr, externalName)
+		return err
+	})
 }
 
 // templatingOptions decides WHETHER to install a templating pass, and says so in one place so a
