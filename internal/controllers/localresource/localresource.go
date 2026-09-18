@@ -363,6 +363,24 @@ func (e *external) syncWithRetry(ctx context.Context, cr *localResourcev1alpha1.
 	return err
 }
 
+// validateFromRefNamespace rejects a fromRef that names a namespace other than the referencing
+// LocalResource's own (#10). Pure so the rule is testable without a git server — SyncLocalResources
+// clones a repository before it reaches this point.
+//
+// An empty namespace is permitted: that is the cluster-scoped read path, not the author-directed
+// namespace escalation this closes.
+func validateFromRefNamespace(refNamespace, crNamespace string) error {
+	if refNamespace == "" || refNamespace == crNamespace {
+		return nil
+	}
+	return fmt.Errorf(
+		"fromResource.fromRef.namespace %q is not permitted: a LocalResource may only reference "+
+			"resources in its own namespace (%q). This reference is resolved with the provider's "+
+			"identity, so permitting another namespace would let it read and publish objects its "+
+			"author may not be entitled to",
+		refNamespace, crNamespace)
+}
+
 func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1alpha1.LocalResource, commitMessage string) error {
 	spec := cr.Spec.DeepCopy()
 
@@ -418,8 +436,28 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 			return fmt.Errorf("parsing group version from fromResource.FromRef: %w", err)
 		}
 
+		// fromRef is confined to THIS LocalResource's own namespace (#10).
+		//
+		// The read below uses the PROVIDER's ServiceAccount, not the author's — and that account
+		// holds a cluster-wide get on every resource, because cross-namespace refs were the point.
+		// The fetched object is then serialised in full (Secret.data included) and pushed to a git
+		// remote this same CR names. So an author-chosen namespace turned "may create a
+		// LocalResource" into "may read anything in the cluster, and publish it". Confused deputy.
+		//
+		// Refusing an out-of-namespace ref removes the author's ability to AIM that identity. It does
+		// not make the read authorized: a same-namespace read still happens as the provider, so
+		// whoever may create a LocalResource in a namespace can still read what the provider can read
+		// THERE. Closing that needs a SubjectAccessReview against the CR's author, which the CR does
+		// not record — left as an explicit follow-up rather than half-built here.
+		if err := validateFromRefNamespace(spec.FromResource.FromRef.Namespace, cr.GetNamespace()); err != nil {
+			return err
+		}
+
 		var cli dynamic.ResourceInterface
 		if spec.FromResource.FromRef.Namespace == "" {
+			// Cluster-scoped target (the kind has no namespace). Still the provider's identity, so it
+			// is in scope for the SubjectAccessReview follow-up above; left working because it is not
+			// the author-directed namespace escalation this change closes.
 			cli = e.dynamic.Resource(schema.GroupVersionResource{
 				Group:    gv.Group,
 				Version:  gv.Version,
