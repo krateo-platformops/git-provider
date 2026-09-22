@@ -184,7 +184,24 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	if !isTargetRepoSynced {
 		e.log.Debug("Target commit not found in target remote repository", "commitId", cr.Status.TargetCommitId, "branch", cr.Status.TargetBranch)
 		if !cr.Spec.EnableUpdate {
-			return reconciler.ExternalObservation{}, e.failSync(ctx, cr, fmt.Errorf("target commit %s not found on branch %s while enableUpdate is false", cr.Status.TargetCommitId, cr.Status.TargetBranch))
+			// Stays an error on purpose. The resource genuinely cannot be reconciled and a human
+			// has to choose between re-pinning and allowing updates, so surfacing it as
+			// Synced=False/ReconcileError is right — TC12 and TC13 pin that contract deliberately,
+			// and TC13 covers the auto-heal once enableUpdate is flipped.
+			//
+			// What WAS wrong is the wording. "target commit %s not found on branch %s while
+			// enableUpdate is false" describes what the check found and reads as though the commit
+			// was pinned wrong. Usually it was not: the commit was discarded along with the history
+			// that contained it, when the target repository was recreated or force-pushed. Nine
+			// Repo CRs hit this simultaneously on one such event, and the message sent the reader
+			// looking for nine bad pins (#23).
+			//
+			// Note this is NOT the #22 situation, despite both being reached from this function.
+			// There the provider refused on an ambiguity nothing would ever resolve, so the
+			// resource was stranded with no path back. Here there is a real decision for a person
+			// to make, and reporting it until they make it is correct.
+			return reconciler.ExternalObservation{}, e.failSync(ctx, cr, unreachableTargetCommitError(
+				cr.Status.TargetCommitId, cr.Status.TargetBranch, cr.Spec.ToRepo.Url))
 		}
 		return reconciler.ExternalObservation{
 			ResourceExists:   true,
