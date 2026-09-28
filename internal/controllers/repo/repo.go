@@ -29,7 +29,9 @@ import (
 	plumbingevent "github.com/krateo-platformops/plumbing/kubeutil/event"
 	"github.com/krateo-platformops/plumbing/kubeutil/eventrecorder"
 	"github.com/krateo-platformops/plumbing/ptr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	record "k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 )
 
 var (
@@ -146,6 +148,11 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 
 	if cr.Status.TargetCommitId != "" {
 		meta.SetExternalName(cr, cr.Status.TargetCommitId)
+	} else if name := meta.GetExternalName(cr); name != "" {
+		// The external name is the pushed commit (Create sets both). A status write lost after the
+		// push leaves only the name — the runtime persists it as a critical annotation — so read the
+		// target commit from it rather than checking the history for "" and calling the push lost.
+		cr.Status.TargetCommitId = name
 	}
 
 	if meta.GetExternalName(cr) == "" {
@@ -453,8 +460,7 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 		cr.Status.TargetBranch = toRepo.CurrentBranch()
 		cr.Status.OriginBranch = fromRepo.CurrentBranch()
 
-		err = e.kube.Status().Update(ctx, cr)
-		if err != nil {
+		if err := e.updateStatusWithRetry(ctx, cr); err != nil {
 			return e.failSync(ctx, cr, fmt.Errorf("unable to update status: %w", err))
 		}
 		return nil
@@ -478,11 +484,52 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 	cr.Status.TargetCommitId = toRepoCommitId
 	cr.Status.TargetBranch = toRepo.CurrentBranch()
 	cr.Status.OriginBranch = fromRepo.CurrentBranch()
-	err = e.kube.Status().Update(ctx, cr)
-	if err != nil {
+	if err := e.updateStatusWithRetry(ctx, cr); err != nil {
 		return e.failSync(ctx, cr, fmt.Errorf("unable to update status: %w", err))
 	}
 	return nil
+}
+
+// updateStatusWithRetry persists the sync outcome, re-reading the object when the write loses an
+// optimistic-concurrency race — the LocalResource controller's fix (#16), which this controller
+// never got (#26).
+//
+// This write happens AFTER the push. Returning its conflict made Create fail with a 409, and
+// provider-runtime answers a conflict from Create by requeueing WITHOUT recording an outcome
+// (reconciler.go:997-1008): `krateo.io/external-create-pending` stays, neither -succeeded nor
+// -failed is written, and every later reconcile refuses with "cannot determine creation result".
+// The push had landed; only its record was lost — seen on publish-e2e-bp-0928-source, the first
+// publish of a blueprint, 14ms after a successful push.
+//
+// A status-subresource write returns the SERVER's object, whose annotations replace the copy's — so
+// the external name set just before is gone from `cr` after any successful write. It is set again
+// afterwards: the runtime persists it as the create's critical annotation, the one record of the
+// push that does not depend on this status write having landed.
+func (e *external) updateStatusWithRetry(ctx context.Context, cr *repov1alpha1.Repo) error {
+	pushed := meta.GetExternalName(cr)
+	defer func() {
+		if pushed != "" {
+			meta.SetExternalName(cr, pushed)
+		}
+	}()
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		err := e.kube.Status().Update(ctx, cr)
+		if err == nil || !apierrors.IsConflict(err) {
+			return err
+		}
+		// Refresh metadata (resourceVersion) from the server but KEEP the status this sync produced
+		// and the external name just set, then let RetryOnConflict try the write again.
+		latest := &repov1alpha1.Repo{}
+		if getErr := e.kube.Get(ctx, client.ObjectKeyFromObject(cr), latest); getErr != nil {
+			return getErr
+		}
+		status := cr.Status
+		externalName := meta.GetExternalName(cr)
+		latest.DeepCopyInto(cr)
+		cr.Status = status
+		meta.SetExternalName(cr, externalName)
+		return err
+	})
 }
 
 // templatingOptions decides which templating pass — if any — a Repo gets, in one place and with
