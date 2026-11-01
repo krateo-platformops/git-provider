@@ -13,7 +13,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/go-logr/logr v1.4.4
 	github.com/krateo-platformops/plumbing v1.14.3
-	github.com/krateo-platformops/provider-runtime v1.7.0
+	github.com/krateo-platformops/provider-runtime v1.7.2
 	github.com/moby/moby/api v1.52.0
 	github.com/moby/moby/client v0.1.0
 	github.com/pkg/errors v0.9.1
@@ -106,10 +106,10 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/bridges/otelslog v0.8.0 // indirect
+	go.opentelemetry.io/contrib/bridges/otelslog v0.20.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
-	go.opentelemetry.io/otel/log v0.9.0 // indirect
+	go.opentelemetry.io/otel/log v0.21.0 // indirect
 	go.opentelemetry.io/otel/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
