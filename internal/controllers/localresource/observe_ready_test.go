@@ -136,3 +136,20 @@ func TestObserveUnreadableTargetIsNotReadyAssessed(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, reconciler.IsReadyAssessed(err), "an Observe that could not tell must not claim it set Ready: %v", err)
 }
+
+// While the LocalResource is being deleted, Ready=Deleting holds whatever the target answers. The
+// runtime keeps a Deleting it finds on the object, but writes NotObserved over anything else, so
+// an Observe error on a LocalResource being deleted must set Deleting first. Synced is not
+// ReconcileError here, so Observe reads the target and fails instead of taking the deletion
+// shortcut.
+func TestObserveErrorWhileDeletingSetsDeleting(t *testing.T) {
+	target := gittest.NewRepo(t, branch)
+	cr := newObservedLocalResource(target.URL+"-does-not-exist", "kind: ConfigMap")
+	cr.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+	cr.Status.SetConditions(commonv1.Available())
+
+	_, err := newObserveExternal().Observe(context.Background(), cr)
+
+	require.Error(t, err)
+	require.Equal(t, commonv1.ReasonDeleting, cr.GetCondition(commonv1.TypeReady).Reason)
+}

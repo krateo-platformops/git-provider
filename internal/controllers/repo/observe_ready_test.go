@@ -171,3 +171,33 @@ func TestObserveUnreadableRemoteIsNotReadyAssessed(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, reconciler.IsReadyAssessed(err), "an Observe that could not tell must not claim it set Ready: %v", err)
 }
+
+// While the Repo is being deleted, Ready=Deleting holds whatever the remote answers. The runtime
+// keeps a Deleting it finds on the object, but writes NotObserved over anything else, so an
+// Observe error on a Repo being deleted must set Deleting first. Synced is not ReconcileError
+// here, so Observe reads the remote and fails instead of taking the deletion shortcut.
+func TestObserveErrorWhileDeletingSetsDeleting(t *testing.T) {
+	cases := map[string]func(f observeFixture, cr *repov1alpha1.Repo){
+		"UnreadableRemote": func(f observeFixture, cr *repov1alpha1.Repo) {
+			cr.Spec.FromRepo.Url = f.origin.URL + "-does-not-exist"
+		},
+		// failSync sets Unavailable first; Deleting must still win.
+		"UnreachableTargetCommit": func(_ observeFixture, cr *repov1alpha1.Repo) {
+			cr.Status.TargetCommitId = unreachableCommit
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newObserveFixture(t)
+			cr := f.syncedRepo()
+			cr.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+			cr.Status.SetConditions(commonv1.Available())
+			mutate(f, cr)
+
+			_, err := newObserveExternal().Observe(context.Background(), cr)
+
+			require.Error(t, err)
+			require.Equal(t, commonv1.ReasonDeleting, cr.GetCondition(commonv1.TypeReady).Reason)
+		})
+	}
+}

@@ -125,7 +125,20 @@ type external struct {
 // error sets Ready, and an error returned after Ready was set is wrapped with
 // reconciler.ReadyAssessed. A plain error means "could not tell", and the runtime answers it with
 // Ready=Unknown/NotObserved. TestObserveSetsReady covers each success path.
+//
+// A resource being deleted is the exception. Ready=Deleting holds whatever the target answers,
+// and the runtime keeps a Deleting it finds on the object instead of writing NotObserved. So an
+// error returned while the resource is being deleted sets Deleting first. A successful Observe
+// owes nothing there, because the runtime's deletion branch sets Deleting itself (v1.8.1).
 func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
+	obs, err := e.observe(ctx, mg)
+	if err != nil && meta.WasDeleted(mg) {
+		mg.SetConditions(commonv1.Deleting())
+	}
+	return obs, err
+}
+
+func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
 	cr, ok := mg.(*repov1alpha1.Repo)
 	if !ok {
 		return reconciler.ExternalObservation{}, errNotRepo
@@ -146,8 +159,8 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 			e.log.Debug("External resource should not be deleted by provider, skip deleting.")
 		} else {
 			// The Repo is being deleted and nothing is removed from the target, so the runtime
-			// releases it. Synced=ReconcileError is also what a failed Observe leaves next to
-			// Ready=NotObserved, so Ready must be set here: the object is going away, so Deleting.
+			// releases it. Since v1.8.1 the runtime does not require Ready here; Deleting is set
+			// anyway so that every path taken while deleting reports the same Ready.
 			cr.Status.SetConditions(commonv1.Deleting())
 			return reconciler.ExternalObservation{
 				ResourceExists:   false,
