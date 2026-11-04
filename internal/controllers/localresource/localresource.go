@@ -166,21 +166,9 @@ type external struct {
 // Observe follows the provider-runtime Ready contract (v1.8.0): every path that returns a nil
 // error sets Ready. No error here follows a Ready write, so none is wrapped with
 // reconciler.ReadyAssessed: each one means "could not tell", and the runtime answers it with
-// Ready=Unknown/NotObserved. TestObserveSetsReady covers each success path.
-//
-// A resource being deleted is the exception. Ready=Deleting holds whatever the target answers,
-// and the runtime keeps a Deleting it finds on the object instead of writing NotObserved. So an
-// error returned while the resource is being deleted sets Deleting first. A successful Observe
-// owes nothing there, because the runtime's deletion branch sets Deleting itself (v1.8.1).
+// Ready=Unknown/NotObserved, or with Deleting for a resource being deleted (v1.8.2).
+// TestObserveSetsReady covers each success path.
 func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
-	obs, err := e.observe(ctx, mg)
-	if err != nil && meta.WasDeleted(mg) {
-		mg.SetConditions(commonv1.Deleting())
-	}
-	return obs, err
-}
-
-func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
 	cr, ok := mg.(*localResourcev1alpha1.LocalResource)
 	if !ok {
 		return reconciler.ExternalObservation{}, errors.New(errNotLocalResource)

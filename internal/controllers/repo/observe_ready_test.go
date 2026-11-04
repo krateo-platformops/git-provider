@@ -172,32 +172,22 @@ func TestObserveUnreadableRemoteIsNotReadyAssessed(t *testing.T) {
 	require.False(t, reconciler.IsReadyAssessed(err), "an Observe that could not tell must not claim it set Ready: %v", err)
 }
 
-// While the Repo is being deleted, Ready=Deleting holds whatever the remote answers. The runtime
-// keeps a Deleting it finds on the object, but writes NotObserved over anything else, so an
-// Observe error on a Repo being deleted must set Deleting first. Synced is not ReconcileError
-// here, so Observe reads the remote and fails instead of taking the deletion shortcut.
-func TestObserveErrorWhileDeletingSetsDeleting(t *testing.T) {
-	cases := map[string]func(f observeFixture, cr *repov1alpha1.Repo){
-		"UnreadableRemote": func(f observeFixture, cr *repov1alpha1.Repo) {
-			cr.Spec.FromRepo.Url = f.origin.URL + "-does-not-exist"
-		},
-		// failSync sets Unavailable first; Deleting must still win.
-		"UnreachableTargetCommit": func(_ observeFixture, cr *repov1alpha1.Repo) {
-			cr.Status.TargetCommitId = unreachableCommit
-		},
-	}
-	for name, mutate := range cases {
-		t.Run(name, func(t *testing.T) {
-			f := newObserveFixture(t)
-			cr := f.syncedRepo()
-			cr.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
-			cr.Status.SetConditions(commonv1.Available())
-			mutate(f, cr)
+// The unreachable-commit error is ReadyAssessed, and the runtime leaves a ReadyAssessed Ready
+// alone even on a Repo being deleted. So Observe must set Deleting itself there, over the
+// Unavailable failSync writes. (A plain error on a Repo being deleted is the runtime's to answer
+// with Deleting, since v1.8.2.) Synced is not ReconcileError here, so Observe reads the target
+// instead of taking the deletion shortcut.
+func TestObserveUnreachableTargetCommitWhileDeletingSetsDeleting(t *testing.T) {
+	f := newObserveFixture(t)
+	cr := f.syncedRepo()
+	cr.DeletionTimestamp = &metav1.Time{Time: metav1.Now().Time}
+	cr.Status.SetConditions(commonv1.Available())
+	cr.Status.TargetCommitId = unreachableCommit
 
-			_, err := newObserveExternal().Observe(context.Background(), cr)
+	_, err := newObserveExternal().Observe(context.Background(), cr)
 
-			require.Error(t, err)
-			require.Equal(t, commonv1.ReasonDeleting, cr.GetCondition(commonv1.TypeReady).Reason)
-		})
-	}
+	require.Error(t, err)
+	require.True(t, reconciler.IsReadyAssessed(err), "Observe set Ready before failing, so the error must be ReadyAssessed: %v", err)
+	require.Equal(t, commonv1.ReasonDeleting, cr.GetCondition(commonv1.TypeReady).Reason)
+	require.Equal(t, commonv1.ReasonReconcileError, cr.GetCondition(commonv1.TypeSynced).Reason)
 }

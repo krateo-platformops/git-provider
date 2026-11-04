@@ -124,21 +124,9 @@ type external struct {
 // Observe follows the provider-runtime Ready contract (v1.8.0): every path that returns a nil
 // error sets Ready, and an error returned after Ready was set is wrapped with
 // reconciler.ReadyAssessed. A plain error means "could not tell", and the runtime answers it with
-// Ready=Unknown/NotObserved. TestObserveSetsReady covers each success path.
-//
-// A resource being deleted is the exception. Ready=Deleting holds whatever the target answers,
-// and the runtime keeps a Deleting it finds on the object instead of writing NotObserved. So an
-// error returned while the resource is being deleted sets Deleting first. A successful Observe
-// owes nothing there, because the runtime's deletion branch sets Deleting itself (v1.8.1).
+// Ready=Unknown/NotObserved, or with Deleting for a resource being deleted (v1.8.2).
+// TestObserveSetsReady covers each success path.
 func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
-	obs, err := e.observe(ctx, mg)
-	if err != nil && meta.WasDeleted(mg) {
-		mg.SetConditions(commonv1.Deleting())
-	}
-	return obs, err
-}
-
-func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
 	cr, ok := mg.(*repov1alpha1.Repo)
 	if !ok {
 		return reconciler.ExternalObservation{}, errNotRepo
@@ -237,8 +225,15 @@ func (e *external) observe(ctx context.Context, mg resource.Managed) (reconciler
 			// failSync sets Ready=Unavailable. That is an assessment, not a failure to observe: the
 			// target was read and the pushed commit is not on it. ReadyAssessed keeps it, instead
 			// of the runtime replacing it with NotObserved.
-			return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.failSync(ctx, cr, unreachableTargetCommitError(
-				cr.Status.TargetCommitId, cr.Status.TargetBranch, cr.Spec.ToRepo.Url)))
+			//
+			// The runtime also leaves a ReadyAssessed Ready alone on a Repo being deleted, so
+			// Deleting, which holds whatever the target answers, is set here for that case.
+			err := e.failSync(ctx, cr, unreachableTargetCommitError(
+				cr.Status.TargetCommitId, cr.Status.TargetBranch, cr.Spec.ToRepo.Url))
+			if meta.WasDeleted(cr) {
+				cr.Status.SetConditions(commonv1.Deleting())
+			}
+			return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(err)
 		}
 		// Same finding as above, but enableUpdate lets Update push again. Until it does, the
 		// target no longer holds what this Repo pushed: Unavailable, as on the branch above.
