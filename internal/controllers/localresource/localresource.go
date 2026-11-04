@@ -163,6 +163,10 @@ type external struct {
 	rec     record.EventRecorder
 }
 
+// Observe follows the provider-runtime Ready contract (v1.8.0): every path that returns a nil
+// error sets Ready. No error here follows a Ready write, so none is wrapped with
+// reconciler.ReadyAssessed: each one means "could not tell", and the runtime answers it with
+// Ready=Unknown/NotObserved. TestObserveSetsReady covers each success path.
 func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
 	cr, ok := mg.(*localResourcev1alpha1.LocalResource)
 	if !ok {
@@ -175,6 +179,8 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 
 	log.Debug("Observing resource")
 
+	// Ready is already Deleting, which the runtime keeps whatever happens, so there is nothing
+	// new to report.
 	if cr.GetCondition(commonv1.TypeReady).Reason == commonv1.ReasonDeleting {
 		return reconciler.ExternalObservation{
 			ResourceExists:   false,
@@ -186,6 +192,10 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 		if !meta.IsActionAllowed(cr, meta.ActionDelete) {
 			log.Debug("External resource should not be deleted by provider, skip deleting.")
 		} else {
+			// The LocalResource is being deleted and nothing is removed from the target, so the
+			// runtime releases it. Synced=ReconcileError is also what a failed Observe leaves next
+			// to Ready=NotObserved, so Ready must be set here: the object is going away, so Deleting.
+			cr.Status.SetConditions(commonv1.Deleting())
 			return reconciler.ExternalObservation{
 				ResourceExists:   false,
 				ResourceUpToDate: true,
@@ -228,6 +238,11 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 		return reconciler.ExternalObservation{}, err
 	} else if hash.IsZero() && hasGitProviderPreviuslyCommitted {
 		log.Debug("Target LocalResource spec is not up-to-date", "commitId", cr.Status.TargetCommitId, "branch", cr.Status.TargetBranch)
+		// An earlier commit of this LocalResource is on the branch, so the target holds an older
+		// version of it: Available. ResourceUpToDate=false carries the drift. Update commits the current
+		// spec, unless spec.syncEnabled is false or the management policy blocks updates; the
+		// file then stays as it is, and so does Available.
+		cr.Status.SetConditions(commonv1.Available())
 		return reconciler.ExternalObservation{
 			ResourceExists:   true,
 			ResourceUpToDate: false,
@@ -243,6 +258,9 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	}
 
 	if meta.GetExternalName(cr) == "" {
+		// Nothing has been committed yet, so there is nothing to use. Create, when the management
+		// policy allows it, moves this to Creating.
+		cr.Status.SetConditions(commonv1.Unavailable().WithMessage("the resource has not been committed to the target repository yet"))
 		return reconciler.ExternalObservation{
 			ResourceExists:   false,
 			ResourceUpToDate: true,

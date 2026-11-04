@@ -121,6 +121,10 @@ type external struct {
 	rec  plumbingevent.APIRecorder
 }
 
+// Observe follows the provider-runtime Ready contract (v1.8.0): every path that returns a nil
+// error sets Ready, and an error returned after Ready was set is wrapped with
+// reconciler.ReadyAssessed. A plain error means "could not tell", and the runtime answers it with
+// Ready=Unknown/NotObserved. TestObserveSetsReady covers each success path.
 func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler.ExternalObservation, error) {
 	cr, ok := mg.(*repov1alpha1.Repo)
 	if !ok {
@@ -128,6 +132,8 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	}
 	e.log.Info("Observing resource")
 
+	// Ready is already Deleting, which the runtime keeps whatever happens, so there is nothing
+	// new to report.
 	if cr.GetCondition(commonv1.TypeReady).Reason == commonv1.ReasonDeleting {
 		return reconciler.ExternalObservation{
 			ResourceExists:   false,
@@ -139,6 +145,10 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 		if !meta.IsActionAllowed(cr, meta.ActionDelete) {
 			e.log.Debug("External resource should not be deleted by provider, skip deleting.")
 		} else {
+			// The Repo is being deleted and nothing is removed from the target, so the runtime
+			// releases it. Synced=ReconcileError is also what a failed Observe leaves next to
+			// Ready=NotObserved, so Ready must be set here: the object is going away, so Deleting.
+			cr.Status.SetConditions(commonv1.Deleting())
 			return reconciler.ExternalObservation{
 				ResourceExists:   false,
 				ResourceUpToDate: true,
@@ -156,6 +166,9 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	}
 
 	if meta.GetExternalName(cr) == "" {
+		// Nothing has been pushed yet, so there is nothing to use. Create, when the management
+		// policy allows it, moves this to Creating.
+		cr.Status.SetConditions(commonv1.Unavailable().WithMessage("the target repository has not been synced yet"))
 		return reconciler.ExternalObservation{
 			ResourceExists:   false,
 			ResourceUpToDate: true,
@@ -207,9 +220,18 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 			// There the provider refused on an ambiguity nothing would ever resolve, so the
 			// resource was stranded with no path back. Here there is a real decision for a person
 			// to make, and reporting it until they make it is correct.
-			return reconciler.ExternalObservation{}, e.failSync(ctx, cr, unreachableTargetCommitError(
-				cr.Status.TargetCommitId, cr.Status.TargetBranch, cr.Spec.ToRepo.Url))
+			//
+			// failSync sets Ready=Unavailable. That is an assessment, not a failure to observe: the
+			// target was read and the pushed commit is not on it. ReadyAssessed keeps it, instead
+			// of the runtime replacing it with NotObserved.
+			return reconciler.ExternalObservation{}, reconciler.ReadyAssessed(e.failSync(ctx, cr, unreachableTargetCommitError(
+				cr.Status.TargetCommitId, cr.Status.TargetBranch, cr.Spec.ToRepo.Url)))
 		}
+		// Same finding as above, but enableUpdate lets Update push again. Until it does, the
+		// target no longer holds what this Repo pushed: Unavailable, as on the branch above.
+		cr.Status.SetConditions(commonv1.Unavailable().WithMessage(fmt.Sprintf(
+			"target commit %s is no longer reachable from branch %s of %s",
+			cr.Status.TargetCommitId, cr.Status.TargetBranch, cr.Spec.ToRepo.Url)))
 		return reconciler.ExternalObservation{
 			ResourceExists:   true,
 			ResourceUpToDate: false,
@@ -219,6 +241,10 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	if ptr.Deref(latestCommit, "") != cr.Status.OriginCommitId {
 		e.log.Debug("Origin commit is no longer the latest commit on origin repository", "commitId", cr.Status.OriginCommitId, "branch", cr.Status.OriginBranch)
 		if cr.Spec.EnableUpdate {
+			// The target still holds the last sync, so it is usable: Available, as on the
+			// enableUpdate=false branch below. ResourceUpToDate=false carries the drift, and
+			// Update pushes the newer origin commits.
+			cr.Status.SetConditions(commonv1.Available())
 			return reconciler.ExternalObservation{
 				ResourceExists:   true,
 				ResourceUpToDate: false,
