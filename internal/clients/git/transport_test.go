@@ -6,7 +6,6 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	gitclient "github.com/go-git/go-git/v5/plumbing/transport/client"
-	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 )
 
 // domain \t httponly \t path \t secure \t expires \t name \t value
@@ -117,13 +116,13 @@ func TestTransportRegistryIsRaceFree(t *testing.T) {
 
 	wg.Wait()
 
-	// Every writer must leave go-git's default https client installed, so that
+	// Every writer must leave defaultClient installed, so that
 	// the readers above are entitled to skip installing anything at all.
 	got, err := gitclient.NewClient(ep)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := githttp.DefaultClient; got != want {
-		t.Fatalf("https transport not restored: got %#v, want the go-git default", got)
+	if want := transport.Transport(defaultClient); got != want {
+		t.Fatalf("https transport not restored: got %#v, want defaultClient", got)
 	}
 }

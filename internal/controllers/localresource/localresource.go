@@ -37,6 +37,7 @@ import (
 	credentialhelper "github.com/krateoplatformops/git-provider/internal/controllers/common/credentialHelper"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/footer"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/option"
+	"github.com/krateoplatformops/git-provider/internal/controllers/common/ratelimitkey"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/templating"
 	"github.com/krateoplatformops/git-provider/internal/tools/copier"
 	"github.com/krateoplatformops/git-provider/internal/tools/localfs"
@@ -73,6 +74,7 @@ func Setup(mgr ctrl.Manager, o option.SetupOptions) error {
 		reconciler.WithLogger(log),
 		reconciler.WithRecorder(plumbingevent.NewAPIRecorder(recorder)),
 		reconciler.WithTimeout(o.Controller.Timeout),
+		reconciler.WithRateLimitGovernor(o.Controller.RateLimitGovernor),
 	)
 
 	git.CommitAuthorEmail = o.Git.CommitAuthorEmail
@@ -163,6 +165,19 @@ type external struct {
 	rec     record.EventRecorder
 }
 
+var _ reconciler.RateLimitKeyer = (*external)(nil)
+
+// RateLimitKey implements reconciler.RateLimitKeyer. Every call of a LocalResource goes to one
+// remote with one credential, so one key represents them all. It is on the client and not the
+// connector because Connect makes no git call: it reads Secrets from the cluster.
+func (e *external) RateLimitKey(mg resource.Managed) (string, error) {
+	cr, ok := mg.(*localResourcev1alpha1.LocalResource)
+	if !ok {
+		return "", errors.New(errNotLocalResource)
+	}
+	return ratelimitkey.For(cr.Spec.ToRepo.Url, cr.Spec.ToRepo.Credentials.SecretRef), nil
+}
+
 // Observe follows the provider-runtime Ready contract (v1.8.0): every path that returns a nil
 // error sets Ready. No error here follows a Ready write, so none is wrapped with
 // reconciler.ReadyAssessed: each one means "could not tell", and the runtime answers it with
@@ -209,7 +224,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 	}
 
 	var hasGitProviderPreviuslyCommitted bool
-	if hash, err := git.IsFuncInGitCommitHistory(ctx, git.ListOptions{
+	if hash, err := git.IsFuncInGitCommitHistory(ratelimitkey.WithRemote(ctx, cr.Spec.ToRepo.Url, cr.Spec.ToRepo.Credentials.SecretRef), git.ListOptions{
 		URL:        cr.Spec.ToRepo.Url,
 		Auth:       e.cfg.ToRepoCreds.Transport,
 		Insecure:   e.cfg.Insecure,
@@ -403,7 +418,9 @@ func validateFromRefNamespace(refNamespace, crNamespace string) error {
 func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1alpha1.LocalResource, commitMessage string) error {
 	spec := cr.Spec.DeepCopy()
 
-	toRepo, err := git.Clone(git.CloneOptions{
+	toCtx := ratelimitkey.WithRemote(ctx, spec.ToRepo.Url, spec.ToRepo.Credentials.SecretRef)
+
+	toRepo, err := git.Clone(toCtx, git.CloneOptions{
 		URL:                     spec.ToRepo.Url,
 		Auth:                    e.cfg.ToRepoCreds.Transport,
 		Insecure:                e.cfg.Insecure,
@@ -588,7 +605,7 @@ func (e *external) SyncLocalResources(ctx context.Context, cr *localResourcev1al
 	}
 	log.Debug("Target LocalResource committed", "branch", toRepo.CurrentBranch(), "commitId", toLocalResourceCommitId)
 
-	err = toRepo.Push("origin", toRepo.CurrentBranch(), e.cfg.Insecure)
+	err = toRepo.Push(toCtx, "origin", toRepo.CurrentBranch(), e.cfg.Insecure)
 	if err != nil {
 		return fmt.Errorf("unable to push target LocalResource: %w", err)
 	}

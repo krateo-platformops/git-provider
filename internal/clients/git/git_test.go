@@ -24,7 +24,7 @@ func TestIsInGitCommitHistory(t *testing.T) {
 
 	hash := "6ecf0ef2c2dffb796033e5a02219af86ec6584e5"
 
-	exists, err := IsInGitCommitHistory(opts, hash)
+	exists, err := IsInGitCommitHistory(context.Background(), opts, hash)
 	if err != nil {
 		t.Errorf("Error checking commit history: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestGetLatestCommitRemote(t *testing.T) {
 	baseRepo := BaseSuite{}
 	baseRepo.BuildBasicRepository()
 
-	repo, err := Clone(CloneOptions{
+	repo, err := Clone(context.Background(), CloneOptions{
 		URL: baseRepo.GetBasicLocalRepositoryURL(),
 	})
 	require.NoError(t, err)
@@ -49,7 +49,7 @@ func TestGetLatestCommitRemote(t *testing.T) {
 	_, err = repo.FS().OpenFile("README.md", os.O_RDWR|os.O_CREATE, 0644)
 	require.NoError(t, err)
 
-	commit, err := GetLatestCommitRemote(ListOptions{
+	commit, err := GetLatestCommitRemote(context.Background(), ListOptions{
 		URL:    baseRepo.GetBasicLocalRepositoryURL(),
 		Branch: "master",
 	})
@@ -57,7 +57,7 @@ func TestGetLatestCommitRemote(t *testing.T) {
 	expected := "6ecf0ef2c2dffb796033e5a02219af86ec6584e5"
 	assert.Equal(t, expected, *commit)
 
-	commit, err = GetLatestCommitRemote(ListOptions{
+	commit, err = GetLatestCommitRemote(context.Background(), ListOptions{
 		URL:    baseRepo.GetBasicLocalRepositoryURL(),
 		Branch: "branch",
 	})
@@ -70,7 +70,7 @@ func TestGetLatestCommitRemoteBranchNotFound(t *testing.T) {
 	baseRepo := BaseSuite{}
 	baseRepo.BuildBasicRepository()
 
-	_, err := GetLatestCommitRemote(ListOptions{
+	_, err := GetLatestCommitRemote(context.Background(), ListOptions{
 		URL:    baseRepo.GetBasicLocalRepositoryURL(),
 		Branch: "missing-branch",
 	})
@@ -93,13 +93,13 @@ func TestPull(t *testing.T) {
 	baseRepo := BaseSuite{}
 	baseRepo.BuildBasicRepository()
 
-	repo, err := Clone(CloneOptions{
+	repo, err := Clone(context.Background(), CloneOptions{
 		URL:    baseRepo.GetBasicLocalRepositoryURL(),
 		Branch: "master",
 	})
 	require.NoError(t, err)
 
-	err = Pull(repo, false)
+	err = Pull(context.Background(), repo, false)
 	require.NoError(t, err)
 }
 
@@ -107,7 +107,7 @@ func TestBranch(t *testing.T) {
 	baseRepo := BaseSuite{}
 	baseRepo.BuildBasicRepository()
 
-	repo, err := Clone(CloneOptions{
+	repo, err := Clone(context.Background(), CloneOptions{
 		URL:    baseRepo.GetBasicLocalRepositoryURL(),
 		Branch: "master",
 	})
@@ -133,7 +133,7 @@ func TestCurrentBranch(t *testing.T) {
 	baseRepo := BaseSuite{}
 	baseRepo.BuildBasicRepository()
 
-	repo, err := Clone(CloneOptions{
+	repo, err := Clone(context.Background(), CloneOptions{
 		URL:    baseRepo.GetBasicLocalRepositoryURL(),
 		Branch: "master",
 	})
@@ -147,7 +147,7 @@ func TestGetLatestCommit(t *testing.T) {
 	baseRepo := BaseSuite{}
 	baseRepo.BuildBasicRepository()
 
-	repo, err := Clone(CloneOptions{
+	repo, err := Clone(context.Background(), CloneOptions{
 		URL: baseRepo.GetBasicLocalRepositoryURL(),
 	})
 	require.NoError(t, err)
@@ -162,7 +162,7 @@ func TestPush(t *testing.T) {
 	baseRepo.BuildBasicRepository()
 
 	t.Run("push without branch", func(t *testing.T) {
-		repo, err := Clone(CloneOptions{
+		repo, err := Clone(context.Background(), CloneOptions{
 			URL:    baseRepo.GetBasicLocalRepositoryURL(),
 			Branch: "master",
 		})
@@ -185,12 +185,12 @@ func TestPush(t *testing.T) {
 		require.NoError(t, err)
 
 		// Push to a different branch to avoid the "currently checked out" error
-		err = repo.Push("origin", "test-branch", false)
+		err = repo.Push(context.Background(), "origin", "test-branch", false)
 		require.NoError(t, err)
 	})
 
 	t.Run("push with specific branch", func(t *testing.T) {
-		repo, err := Clone(CloneOptions{
+		repo, err := Clone(context.Background(), CloneOptions{
 			URL:    baseRepo.GetBasicLocalRepositoryURL(),
 			Branch: "master",
 		})
@@ -219,12 +219,12 @@ func TestPush(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = repo.Push("origin", "feature", false)
+		err = repo.Push(context.Background(), "origin", "feature", false)
 		require.NoError(t, err)
 	})
 
 	t.Run("push with insecure option", func(t *testing.T) {
-		repo, err := Clone(CloneOptions{
+		repo, err := Clone(context.Background(), CloneOptions{
 			URL:    baseRepo.GetBasicLocalRepositoryURL(),
 			Branch: "master",
 		})
@@ -247,12 +247,12 @@ func TestPush(t *testing.T) {
 		require.NoError(t, err)
 
 		// Push to a different branch to avoid the "currently checked out" error
-		err = repo.Push("origin", "insecure-test-branch", true)
+		err = repo.Push(context.Background(), "origin", "insecure-test-branch", true)
 		require.NoError(t, err)
 	})
 
 	t.Run("push non-existing local branch", func(t *testing.T) {
-		repo, err := Clone(CloneOptions{
+		repo, err := Clone(context.Background(), CloneOptions{
 			URL:    baseRepo.GetBasicLocalRepositoryURL(),
 			Branch: "master",
 		})
@@ -275,7 +275,7 @@ func TestPush(t *testing.T) {
 		require.NoError(t, err)
 
 		// Try to push to a branch that doesn't exist locally yet
-		err = repo.Push("origin", "new-branch", false)
+		err = repo.Push(context.Background(), "origin", "new-branch", false)
 		require.NoError(t, err)
 	})
 }
@@ -310,7 +310,7 @@ func TestIsFuncInGitCommitHistory_complex(t *testing.T) {
 	baseRepo := BaseSuite{}
 	baseRepo.BuildBasicRepository()
 
-	repo, err := Clone(CloneOptions{
+	repo, err := Clone(context.Background(), CloneOptions{
 		URL:    baseRepo.GetBasicLocalRepositoryURL(),
 		Branch: "master",
 	})
@@ -333,6 +333,6 @@ func TestIsFuncInGitCommitHistory_complex(t *testing.T) {
 	require.False(t, hash.IsZero())
 
 	// Try to push to a branch that doesn't exist locally yet
-	err = repo.Push("origin", "new-branch", false)
+	err = repo.Push(context.Background(), "origin", "new-branch", false)
 	require.NoError(t, err)
 }
