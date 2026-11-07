@@ -168,10 +168,6 @@
           "type": "string",
           "title": "Slow down when a git server signals a rate limit"
         },
-        "GIT_PROVIDER_SATURATION_GOVERNOR": {
-          "type": "string",
-          "title": "Slow down when the controller is CPU-saturated"
-        },
         "GIT_PROVIDER_SERVICE_PORT_HACK": {
           "type": "string",
           "title": "Service port hack"

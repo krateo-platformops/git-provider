@@ -43,7 +43,6 @@ The provider controller can be configured using the following environment variab
 | `GIT_PROVIDER_GIT_COMMIT_AUTHOR_NAME` | string | `krateo-git-provider` | The name to use for git commits. |
 | `GIT_PROVIDER_GIT_COMMIT_AUTHOR_EMAIL` | string | `contact@krateo.io` | The email to use for git commits. |
 | `GIT_PROVIDER_RATE_LIMIT_GOVERNOR` | bool | `false` (the chart sets `true`) | Slow reconciles down per remote and credential when a git server signals a rate limit |
-| `GIT_PROVIDER_SATURATION_GOVERNOR` | bool | `false` (the chart sets `true`) | Slow reconciles down when the controller's own container is CPU-saturated. Under a CPU limit below one core this keeps the controller close to one call at a time while there is work |
 
 ## CRD Reference
 To view the generated CR configuration schema, visit [this link](https://doc.crds.dev/github.com/krateoplatformops/git-provider).

@@ -5,7 +5,6 @@ import (
 
 	"github.com/krateo-platformops/provider-runtime/pkg/controller"
 	"github.com/krateo-platformops/provider-runtime/pkg/logging"
-	"github.com/krateo-platformops/provider-runtime/pkg/ratelimit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
@@ -31,8 +30,7 @@ func TestSetupGovernsEveryReconciler(t *testing.T) {
 		Logger:                  logging.NewNopLogger(),
 		MaxConcurrentReconciles: 5,
 		RateLimit: controller.RateLimitOptions{
-			Enabled:    true,
-			Saturation: ratelimit.SaturationOptions{Enabled: true},
+			Enabled: true,
 		},
 	}
 	require.NoError(t, o.SetupRateLimitGovernor(mgr))
