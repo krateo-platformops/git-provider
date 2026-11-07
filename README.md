@@ -39,9 +39,10 @@ The provider controller can be configured using the following environment variab
 | `GIT_PROVIDER_LEADER_ELECTION` | bool | `false` | Use leader election for the controller manager |
 | `GIT_PROVIDER_MAX_ERROR_RETRY_INTERVAL` | duration | `1m` | The maximum interval between retries when an error occurs. Should be less than half of the poll interval |
 | `GIT_PROVIDER_MIN_ERROR_RETRY_INTERVAL` | duration | `1s` | The minimum interval between retries when an error occurs. Should be less than max-error-retry-interval |
-| `GIT_PROVIDER_TIMEOUT` | duration | `4m` | The timeout time for each action. |
+| `GIT_PROVIDER_TIMEOUT` | duration | `4m` | The time all the external calls of one reconcile share, clones and pushes included. A call still running at the deadline fails. Raise it for repositories that take longer to clone and push (with the chart: `--set-string env.GIT_PROVIDER_TIMEOUT=10m`) |
 | `GIT_PROVIDER_GIT_COMMIT_AUTHOR_NAME` | string | `krateo-git-provider` | The name to use for git commits. |
 | `GIT_PROVIDER_GIT_COMMIT_AUTHOR_EMAIL` | string | `contact@krateo.io` | The email to use for git commits. |
+| `GIT_PROVIDER_RATE_LIMIT_GOVERNOR` | bool | `false` (the chart sets `true`) | Slow reconciles down per remote and credential when a git server signals a rate limit |
 
 ## CRD Reference
 To view the generated CR configuration schema, visit [this link](https://doc.crds.dev/github.com/krateoplatformops/git-provider).

@@ -344,7 +344,7 @@ func deleteGiteaRepo(t *testing.T, name string) {
 func cloneGiteaRepo(t *testing.T, repoName, branch string) *gitclient.Repo {
 	t.Helper()
 
-	repo, err := gitclient.Clone(gitclient.CloneOptions{
+	repo, err := gitclient.Clone(context.Background(), gitclient.CloneOptions{
 		URL:      giteaRepoURL(repoName),
 		Auth:     gitHTTPAuth(),
 		Insecure: true,
@@ -412,7 +412,7 @@ func commitFilesToRepo(t *testing.T, repoName, branch, message string, files map
 		ToPath:     "/",
 	})
 	require.NoError(t, err)
-	require.NoError(t, repo.Push("origin", branch, true))
+	require.NoError(t, repo.Push(context.Background(), "origin", branch, true))
 
 	commitID, err := repo.GetLatestCommit(repo.CurrentBranch())
 	require.NoError(t, err)
@@ -442,7 +442,7 @@ func assertRemoteFileAbsent(t *testing.T, repoName, branch, path string) {
 func latestRemoteCommit(t *testing.T, repoName, branch string) string {
 	t.Helper()
 
-	commitID, err := gitclient.GetLatestCommitRemote(gitclient.ListOptions{
+	commitID, err := gitclient.GetLatestCommitRemote(context.Background(), gitclient.ListOptions{
 		URL:      giteaRepoURL(repoName),
 		Auth:     gitHTTPAuth(),
 		Insecure: true,

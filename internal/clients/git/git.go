@@ -20,7 +20,6 @@ import (
 
 	"github.com/go-git/go-git/v5/plumbing/cache"
 	gitclient "github.com/go-git/go-git/v5/plumbing/transport/client"
-	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/storage"
 
 	"github.com/go-git/go-billy/v5"
@@ -90,10 +89,14 @@ func normalizeEmptyReasonError(err error) error {
 // krateo.io/external-create-pending annotation and writing the create result,
 // the managed resource is wedged forever on "cannot determine creation result".
 //
-// Operations that need no custom client take the read lock and share go-git's
-// default https client; only the cookie-jar and capability paths write, under
-// the exclusive lock, and they restore the defaults before releasing it.
+// Operations that need no custom client take the read lock and share
+// defaultClient; only the cookie-jar and capability paths write, under the
+// exclusive lock, and they restore the defaults before releasing it.
 var transportMu sync.RWMutex
+
+// remoteListTimeout bounds listing a remote's refs. It is the timeout go-git's
+// Remote.List applies itself; ListContext applies none.
+const remoteListTimeout = 10 * time.Second
 
 type Repo struct {
 	rawURL      string
@@ -132,12 +135,12 @@ type IndexOptions struct {
 	ToPath     string
 }
 
-// cookieJarClient builds the HTTP client carrying the given git cookie.
+// cookieJarClient builds the go-git client carrying the given git cookie.
 //
 // It returns (nil, nil) when there is no usable cookie, which means the caller
-// must leave the global transport registry completely alone - go-git's default
-// https client is already installed and is exactly what we want.
-func cookieJarClient(cookie []byte) (*http.Client, error) {
+// must leave the global transport registry completely alone - defaultClient is
+// already installed and is exactly what we want.
+func cookieJarClient(cookie []byte) (*signalClient, error) {
 	cookie = bytes.Trim(cookie, "\n")
 	if len(cookie) == 0 {
 		return nil, nil
@@ -173,7 +176,7 @@ func cookieJarClient(cookie []byte) (*http.Client, error) {
 		},
 	)
 
-	return &http.Client{Jar: jar}, nil
+	return newSignalClient(jar), nil
 }
 
 // azureDevOps reports whether the URL points at Azure DevOps, which needs the
@@ -202,9 +205,9 @@ func lockTransport(cookie []byte, mutatesGlobals bool) (func(), error) {
 	}
 
 	if custom == nil && !mutatesGlobals {
-		// Nothing to install: go-git's default https client is already in the
-		// registry. Hold the read lock so that no writer can mutate the map
-		// out from under go-git while it reads it.
+		// Nothing to install: defaultClient is already in the registry. Hold
+		// the read lock so that no writer can mutate the map out from under
+		// go-git while it reads it.
 		transportMu.RLock()
 		return transportMu.RUnlock, nil
 	}
@@ -214,11 +217,12 @@ func lockTransport(cookie []byte, mutatesGlobals bool) (func(), error) {
 		return transportMu.Unlock, nil
 	}
 
-	gitclient.InstallProtocol("https", githttp.NewClient(custom))
+	gitclient.InstallProtocol("https", custom)
 	return func() {
-		// Restore the exact singleton go-git ships in its registry, rather than
-		// allocating an equivalent-but-different client on every release.
-		gitclient.InstallProtocol("https", githttp.DefaultClient)
+		// Restore the singleton rather than allocating an equivalent client on
+		// every release. It has to be ours, not go-git's: restoring go-git's
+		// would silently stop every later operation from reporting signals.
+		gitclient.InstallProtocol("https", defaultClient)
 		transportMu.Unlock()
 	}, nil
 }
@@ -226,18 +230,18 @@ func lockTransport(cookie []byte, mutatesGlobals bool) (func(), error) {
 // GetLatestCommitRemote lists the remote refs and returns the tip of the
 // requested branch. It takes the transport lock; use getLatestCommitRemote when
 // the caller already holds it.
-func GetLatestCommitRemote(opts ListOptions) (*string, error) {
+func GetLatestCommitRemote(ctx context.Context, opts ListOptions) (*string, error) {
 	release, err := lockTransport(opts.GitCookies, false)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 
-	return getLatestCommitRemote(opts)
+	return getLatestCommitRemote(ctx, opts)
 }
 
 // getLatestCommitRemote assumes the caller already holds the transport lock.
-func getLatestCommitRemote(opts ListOptions) (*string, error) {
+func getLatestCommitRemote(ctx context.Context, opts ListOptions) (*string, error) {
 	tmpDir, err := os.MkdirTemp(opts.HomeDir, "git-provider-list-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
@@ -272,7 +276,10 @@ func getLatestCommitRemote(opts ListOptions) (*string, error) {
 		return nil, err
 	}
 
-	refs, err := remote.List(&git.ListOptions{
+	ctx, cancel := context.WithTimeout(ctx, remoteListTimeout)
+	defer cancel()
+
+	refs, err := remote.ListContext(ctx, &git.ListOptions{
 		Auth:            opts.Auth,
 		InsecureSkipTLS: opts.Insecure,
 	})
@@ -293,7 +300,7 @@ func restoreUnsupportedCapabilities(oldUnsupportedCaps []capability.Capability) 
 	transport.UnsupportedCapabilities = oldUnsupportedCaps
 }
 
-func isInGitCommitHistory(ctx context.Context, opts ListOptions, hash string) (bool, error) {
+func IsInGitCommitHistory(ctx context.Context, opts ListOptions, hash string) (bool, error) {
 	log := contexttools.LoggerFromCtx(ctx, logging.NewNopLogger())
 
 	tmpDir, err := os.MkdirTemp(opts.HomeDir, "git-provider-history-*")
@@ -349,7 +356,7 @@ func isInGitCommitHistory(ctx context.Context, opts ListOptions, hash string) (b
 		}
 	}
 
-	res.repo, err = git.Clone(res.storer, res.fs, &cloneOpts)
+	res.repo, err = git.CloneContext(ctx, res.storer, res.fs, &cloneOpts)
 	if err != nil {
 		if strings.Contains(err.Error(), "couldn't find remote ref") {
 			log.Warn("Branch not found in remote repository", "branch", opts.Branch, "url", opts.URL)
@@ -439,7 +446,7 @@ func IsFuncInGitCommitHistory(ctx context.Context, opts ListOptions, f func(comm
 		}
 	}
 
-	res.repo, err = git.Clone(res.storer, res.fs, &cloneOpts)
+	res.repo, err = git.CloneContext(ctx, res.storer, res.fs, &cloneOpts)
 	if err != nil {
 		if strings.Contains(err.Error(), "couldn't find remote ref") {
 			log.Warn("Branch not found in remote repository", "branch", opts.Branch, "url", opts.URL)
@@ -523,11 +530,7 @@ func (s *Repo) UpdateIndex(idx *IndexOptions) error {
 	}
 	return nil
 }
-func Clone(opts CloneOptions) (*Repo, error) {
-	return clone(context.Background(), opts)
-}
-
-func clone(ctx context.Context, opts CloneOptions) (*Repo, error) {
+func Clone(ctx context.Context, opts CloneOptions) (*Repo, error) {
 	tmpDir, err := os.MkdirTemp(opts.HomeDir, "git-provider-clone-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temporary directory: %w", err)
@@ -583,7 +586,7 @@ func clone(ctx context.Context, opts CloneOptions) (*Repo, error) {
 		InsecureSkipTLS: opts.Insecure,
 	}
 	isOrphan := true
-	_, err = getLatestCommitRemote(ListOptions{
+	_, err = getLatestCommitRemote(ctx, ListOptions{
 		URL:        opts.URL,
 		Auth:       opts.Auth,
 		Insecure:   opts.Insecure,
@@ -607,7 +610,7 @@ func clone(ctx context.Context, opts CloneOptions) (*Repo, error) {
 		}
 		res.isNewBranch = ptr.To(true)
 	}
-	res.repo, err = git.Clone(res.storer, res.fs, &cloneOpts)
+	res.repo, err = git.CloneContext(ctx, res.storer, res.fs, &cloneOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to clone repository: %w", normalizeEmptyReasonError(err))
 	}
@@ -618,14 +621,6 @@ func clone(ctx context.Context, opts CloneOptions) (*Repo, error) {
 	})
 
 	return res, err
-}
-
-func IsInGitCommitHistory(opts ListOptions, hash string) (bool, error) {
-	return isInGitCommitHistory(context.Background(), opts, hash)
-}
-
-func IsInGitCommitHistoryContext(ctx context.Context, opts ListOptions, hash string) (bool, error) {
-	return isInGitCommitHistory(ctx, opts, hash)
 }
 
 // Exists stats the local filesystem: it never opens a transport, so it must not
@@ -763,7 +758,7 @@ func (s *Repo) Commit(path, msg string, opt *IndexOptions) (plumbing.Hash, error
 	return hash, nil
 }
 
-func (s *Repo) Push(downstream, branch string, insecure bool) error {
+func (s *Repo) Push(ctx context.Context, downstream, branch string, insecure bool) error {
 	release, err := lockTransport(s.cookie, false)
 	if err != nil {
 		return err
@@ -772,7 +767,7 @@ func (s *Repo) Push(downstream, branch string, insecure bool) error {
 
 	//Push the code to the remote
 	if len(branch) == 0 {
-		return s.repo.Push(&git.PushOptions{
+		return s.repo.PushContext(ctx, &git.PushOptions{
 			RemoteName:      downstream,
 			Auth:            s.auth,
 			InsecureSkipTLS: insecure,
@@ -806,7 +801,7 @@ func (s *Repo) Push(downstream, branch string, insecure bool) error {
 		}
 	}
 
-	err = s.repo.Push(&git.PushOptions{
+	err = s.repo.PushContext(ctx, &git.PushOptions{
 		RemoteName:      downstream,
 		Force:           false,
 		Auth:            s.auth,
@@ -821,7 +816,7 @@ func (s *Repo) Push(downstream, branch string, insecure bool) error {
 	return nil
 }
 
-func Pull(s *Repo, insecure bool) error {
+func Pull(ctx context.Context, s *Repo, insecure bool) error {
 	release, err := lockTransport(s.cookie, false)
 	if err != nil {
 		return err
@@ -834,7 +829,7 @@ func Pull(s *Repo, insecure bool) error {
 		return err
 	}
 
-	err = wt.Pull(&git.PullOptions{
+	err = wt.PullContext(ctx, &git.PullOptions{
 		RemoteName:      "origin",
 		Auth:            s.auth,
 		InsecureSkipTLS: insecure,
