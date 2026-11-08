@@ -40,6 +40,7 @@ func main() {
 	maxErrorRetryInterval := flag.Duration("max-error-retry-interval", env.Duration(fmt.Sprintf("%s_MAX_ERROR_RETRY_INTERVAL", envVarPrefix), 1*time.Minute), "The maximum interval between retries when an error occurs. This should be less than the half of the poll interval.")
 	minErrorRetryInterval := flag.Duration("min-error-retry-interval", env.Duration(fmt.Sprintf("%s_MIN_ERROR_RETRY_INTERVAL", envVarPrefix), 1*time.Second), "The minimum interval between retries when an error occurs. This should be less than max-error-retry-interval.")
 	timeout := flag.Duration("timeout", env.Duration(fmt.Sprintf("%s_TIMEOUT", envVarPrefix), 4*time.Minute), "The timeout for each reconcile.")
+	rateLimitGovernor := flag.Bool("rate-limit-governor", env.Bool(fmt.Sprintf("%s_RATE_LIMIT_GOVERNOR", envVarPrefix), false), "Slow reconciles down per remote and credential when a git server signals a rate limit.")
 
 	gitCommitAuthorName := flag.String("git-commit-author-name", env.String(fmt.Sprintf("%s_GIT_COMMIT_AUTHOR_NAME", envVarPrefix), "krateo-git-provider"), "The name to use for git commits.")
 	gitCommitAuthorEmail := flag.String("git-commit-author-email", env.String(fmt.Sprintf("%s_GIT_COMMIT_AUTHOR_EMAIL", envVarPrefix), "contact@krateo.io"), "The email to use for git commits.")
@@ -73,6 +74,7 @@ func main() {
 		WithValues("git-commit-author-name", *gitCommitAuthorName).
 		WithValues("git-commit-author-email", *gitCommitAuthorEmail).
 		WithValues("timeout", timeout.String()).
+		WithValues("rate-limit-governor", *rateLimitGovernor).
 		Info("Starting Git Provider")
 
 	cfg, err := ctrl.GetConfig()
@@ -103,6 +105,13 @@ func main() {
 		MaxConcurrentReconciles: *maxReconcileRate,
 		PollInterval:            *pollInterval,
 		GlobalRateLimiter:       ratelimiter.NewGlobalExponential(*minErrorRetryInterval, *maxErrorRetryInterval),
+		RateLimit: controller.RateLimitOptions{
+			Enabled: *rateLimitGovernor,
+		},
+	}
+	if err := o.SetupRateLimitGovernor(mgr); err != nil {
+		log.Error(err, "Cannot set up the rate-limit governor")
+		os.Exit(1)
 	}
 
 	if err := apis.AddToScheme(mgr.GetScheme()); err != nil {

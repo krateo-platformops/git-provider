@@ -23,6 +23,7 @@ import (
 	repov1alpha1 "github.com/krateoplatformops/git-provider/apis/repo/v1alpha1"
 	"github.com/krateoplatformops/git-provider/internal/clients/git"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/option"
+	"github.com/krateoplatformops/git-provider/internal/controllers/common/ratelimitkey"
 	"github.com/krateoplatformops/git-provider/internal/controllers/common/templating"
 	"github.com/krateoplatformops/git-provider/internal/tools/copier"
 	"github.com/krateoplatformops/git-provider/internal/tools/template"
@@ -66,6 +67,7 @@ func Setup(mgr ctrl.Manager, o option.SetupOptions) error {
 		reconciler.WithLogger(log),
 		reconciler.WithRecorder(plumbingevent.NewAPIRecorder(recorder)),
 		reconciler.WithTimeout(o.Controller.Timeout),
+		reconciler.WithRateLimitGovernor(o.Controller.RateLimitGovernor),
 	)
 
 	return ctrl.NewControllerManagedBy(mgr).
@@ -119,6 +121,29 @@ type external struct {
 	log  logging.Logger
 	cfg  *externalClientOpts
 	rec  plumbingevent.APIRecorder
+}
+
+var _ reconciler.RateLimitKeysProvider = (*external)(nil)
+
+// RateLimitKeys implements reconciler.RateLimitKeysProvider, because every external call of a Repo
+// talks to both of its remotes: Observe lists fromRepo and clones toRepo, and a sync clones both
+// and pushes to toRepo. Each key is the one that remote's signals are reported under, so a call is
+// deferred when either remote is refusing, and takes a slot in both. Remotes on one host with one
+// credential are one scope, so they return one key.
+//
+// It is on the client and not the connector because Connect makes no git call: it reads Secrets
+// from the cluster. Gating Connect on these keys would count calls that never reach those remotes.
+func (e *external) RateLimitKeys(mg resource.Managed) ([]string, error) {
+	cr, ok := mg.(*repov1alpha1.Repo)
+	if !ok {
+		return nil, errNotRepo
+	}
+	from := ratelimitkey.For(cr.Spec.FromRepo.Url, cr.Spec.FromRepo.SecretRef)
+	to := ratelimitkey.For(cr.Spec.ToRepo.Url, cr.Spec.ToRepo.SecretRef)
+	if from == to {
+		return []string{to}, nil
+	}
+	return []string{from, to}, nil
 }
 
 // Observe follows the provider-runtime Ready contract (v1.8.0): every path that returns a nil
@@ -175,7 +200,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 			ResourceUpToDate: true,
 		}, nil
 	}
-	latestCommit, err := git.GetLatestCommitRemote(git.ListOptions{
+	latestCommit, err := git.GetLatestCommitRemote(ratelimitkey.WithRemote(ctx, cr.Spec.FromRepo.Url, cr.Spec.FromRepo.SecretRef), git.ListOptions{
 		URL:        cr.Spec.FromRepo.Url,
 		Auth:       e.cfg.FromRepoCreds,
 		Insecure:   e.cfg.Insecure,
@@ -189,7 +214,7 @@ func (e *external) Observe(ctx context.Context, mg resource.Managed) (reconciler
 		return reconciler.ExternalObservation{}, err
 	}
 
-	isTargetRepoSynced, err := git.IsInGitCommitHistoryContext(ctx, git.ListOptions{
+	isTargetRepoSynced, err := git.IsInGitCommitHistory(ratelimitkey.WithRemote(ctx, cr.Spec.ToRepo.Url, cr.Spec.ToRepo.SecretRef), git.ListOptions{
 		URL:        cr.Spec.ToRepo.Url,
 		Auth:       e.cfg.ToRepoCreds,
 		Insecure:   e.cfg.Insecure,
@@ -359,7 +384,10 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 		altBranch = ptr.To(spec.ToRepo.CloneFromBranch)
 	}
 
-	toRepo, err := git.Clone(git.CloneOptions{
+	toCtx := ratelimitkey.WithRemote(ctx, spec.ToRepo.Url, spec.ToRepo.SecretRef)
+	fromCtx := ratelimitkey.WithRemote(ctx, spec.FromRepo.Url, spec.FromRepo.SecretRef)
+
+	toRepo, err := git.Clone(toCtx, git.CloneOptions{
 		URL:                     spec.ToRepo.Url,
 		Auth:                    e.cfg.ToRepoCreds,
 		Insecure:                e.cfg.Insecure,
@@ -378,7 +406,7 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 	e.rec.Event(cr, plumbingevent.Normal("TargetRepoCloned", "Reconciling", fmt.Sprintf("Successfully cloned target repo: %s", spec.ToRepo.Url)))
 	e.log.Debug(fmt.Sprintf("Target repo on branch %s", toRepo.CurrentBranch()))
 
-	fromRepo, err := git.Clone(git.CloneOptions{
+	fromRepo, err := git.Clone(fromCtx, git.CloneOptions{
 		URL:                     spec.FromRepo.Url,
 		Auth:                    e.cfg.FromRepoCreds,
 		Insecure:                e.cfg.Insecure,
@@ -506,7 +534,7 @@ func (e *external) SyncRepos(ctx context.Context, cr *repov1alpha1.Repo, commitM
 	e.log.Info("Target repo committed", "branch", toRepo.CurrentBranch(), "commitId", toRepoCommitId)
 	e.rec.Event(cr, plumbingevent.Normal("RepoCommitSuccess", "Reconciling", fmt.Sprintf("Target repo committed on branch %s", toRepo.CurrentBranch())))
 
-	err = toRepo.Push("origin", toRepo.CurrentBranch(), e.cfg.Insecure)
+	err = toRepo.Push(toCtx, "origin", toRepo.CurrentBranch(), e.cfg.Insecure)
 	if err != nil {
 		return e.failSync(ctx, cr, fmt.Errorf("unable to push target repo: %w", err))
 	}

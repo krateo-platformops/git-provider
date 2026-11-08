@@ -164,6 +164,10 @@
           "type": "string",
           "title": "Poll interval (e.g. 3m)"
         },
+        "GIT_PROVIDER_RATE_LIMIT_GOVERNOR": {
+          "type": "string",
+          "title": "Slow down when a git server signals a rate limit"
+        },
         "GIT_PROVIDER_SERVICE_PORT_HACK": {
           "type": "string",
           "title": "Service port hack"
